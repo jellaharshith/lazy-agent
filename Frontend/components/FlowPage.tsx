@@ -126,7 +126,7 @@ export default function FlowPage() {
     <PageShell>
       <PageHeader
         eyebrow="Legacy showcase"
-        title="Interactive demo flow"
+        title="Interactive intake flow"
         subtitle="A full concept walkthrough for seeker and provider actions in one screen."
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -263,7 +263,7 @@ export default function FlowPage() {
           <SectionCard className="mt-8 rounded-3xl">
             <h2 className="text-2xl font-bold">Add surplus food or support</h2>
             <p className="mt-2 text-sm text-slate-600">
-              Keep this simple for demo day.
+              Keep this simple for a quick walkthrough.
             </p>
 
             <form className="mt-6 grid gap-4 md:grid-cols-2">

@@ -68,6 +68,21 @@ function formatExpires(value?: string | null): string {
   return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }
 
+/** Human-facing labels for intake `bestMatch.source` (avoid internal names like "supabase"). */
+function formatMatchSource(source: string | undefined): string | null {
+  if (!source) return null;
+  switch (source) {
+    case "supabase":
+      return "Partner listing";
+    case "google_places":
+      return "Google Maps";
+    case "osm":
+      return "Open directory";
+    default:
+      return source.replace(/_/g, " ");
+  }
+}
+
 /** Loose E.164 check for outbound Twilio (country code + digits). */
 function looksLikeE164(s: string): boolean {
   return /^\+[1-9]\d{6,14}$/.test(s.trim());
@@ -180,7 +195,7 @@ function RequestFoodContent() {
   async function onReserve() {
     const rid = result?.bestMatch?.resourceId;
     if (!rid || !session?.access_token) {
-      setReserveError("Sign in as a seeker to reserve a Supabase listing.");
+      setReserveError("Sign in as a seeker to reserve this listing.");
       return;
     }
     if (!phone.trim()) {
@@ -270,6 +285,8 @@ function RequestFoodContent() {
         ? `$${Number(bm.discountedPrice).toFixed(2)} (was $${Number(bm.originalPrice).toFixed(2)})`
         : `$${Number(bm.discountedPrice).toFixed(2)}`
       : null;
+
+  const listingSourceLabel = bm ? formatMatchSource(bm.source) : null;
 
   return (
     <PageShell className="max-w-4xl min-w-0">
@@ -415,9 +432,7 @@ function RequestFoodContent() {
                       value={<span className="capitalize">{bm.type.replace(/_/g, " ")}</span>}
                     />
                   )}
-                  {bm.source && (
-                    <DataRow label="Source" value={<span className="capitalize">{bm.source}</span>} />
-                  )}
+                  {listingSourceLabel && <DataRow label="Listing" value={listingSourceLabel} />}
                 </div>
 
                 {bm.resourceId && (
@@ -520,7 +535,7 @@ function RequestFoodContent() {
                         </ul>
                         {(voiceCalls.seeker.simulated || voiceCalls.provider.simulated) && (
                           <p className="mt-2 text-xs font-medium text-emerald-900/85">
-                            Demo voice confirmation completed (simulated calls).
+                            Voice confirmation completed (simulated when the server uses call simulation).
                           </p>
                         )}
                       </div>
@@ -603,15 +618,15 @@ function RequestFoodContent() {
 }
 
 function RequestFoodPageGate() {
-  const { loading, profileLoading, session, demoMode, profile } = useAuth();
+  const { loading, profileLoading, session, profile } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (loading) return;
-    if (!demoMode && !session?.user) {
+    if (!session?.user) {
       router.replace("/signin");
     }
-  }, [loading, demoMode, session?.user, router]);
+  }, [loading, session?.user, router]);
 
   useEffect(() => {
     if (loading || profileLoading) return;
@@ -626,7 +641,7 @@ function RequestFoodPageGate() {
     );
   }
 
-  if (!demoMode && !session?.user) {
+  if (!session?.user) {
     return (
       <div className="mx-auto max-w-2xl px-6 py-12 text-sm text-slate-600">Redirecting…</div>
     );

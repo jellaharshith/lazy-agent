@@ -1,6 +1,6 @@
 "use client";
 
-import type { Session, User } from "@supabase/supabase-js";
+import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import {
   createContext,
   useCallback,
@@ -13,24 +13,7 @@ import {
 import type { Profile, UserRole } from "@/types/auth";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 
-const DEMO_STORAGE_KEY = "intent-commons-demo-role";
 const PROFILE_LOAD_TIMEOUT_MS = 12_000;
-
-function readDemoRole(): UserRole {
-  if (typeof window === "undefined") return "seeker";
-  const r = localStorage.getItem(DEMO_STORAGE_KEY);
-  return r === "provider" ? "provider" : "seeker";
-}
-
-function demoProfile(role: UserRole): Profile {
-  return {
-    id: "00000000-0000-0000-0000-000000000001",
-    full_name: "Demo user",
-    role,
-    created_at: new Date().toISOString(),
-    phone_number: null,
-  };
-}
 
 function formatSupabaseError(err: {
   message?: string;
@@ -53,10 +36,8 @@ type AuthContextValue = {
   profileLoading: boolean;
   /** Last profile fetch error (cleared on success or sign-out). */
   profileError: string | null;
-  demoMode: boolean;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
-  setDemoRole: (role: UserRole) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -140,14 +121,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
 
   const refreshProfile = useCallback(async () => {
     setProfileError(null);
-    if (demoMode) {
-      setProfile(demoProfile(readDemoRole()));
-      return;
-    }
     if (!session?.user) {
       setProfile(null);
       return;
@@ -167,23 +143,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setProfileLoading(false);
     }
-  }, [demoMode, session?.user]);
+  }, [session?.user]);
 
   useEffect(() => {
     let cancelled = false;
 
     if (!isSupabaseConfigured()) {
-      setDemoMode(true);
       setUser(null);
       setSession(null);
-      setProfile(demoProfile(readDemoRole()));
+      setProfile(null);
       setProfileLoading(false);
       setProfileError(null);
       setLoading(false);
       return;
     }
-
-    setDemoMode(false);
 
     const supabase = getSupabase();
 
@@ -209,11 +182,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         console.error("[auth] getSession error:", err);
         if (!cancelled) {
-          setDemoMode(true);
           setSession(null);
           setUser(null);
-          setProfile(demoProfile(readDemoRole()));
-          setProfileError(null);
+          setProfile(null);
+          setProfileError(err instanceof Error ? err.message : "Could not restore session");
         }
       } finally {
         if (!cancelled) {
@@ -246,20 +218,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+    } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, nextSession) => {
       if (cancelled) return;
 
-      setSession(nextSession);
-      setUser(nextSession?.user ?? null);
+      // GoTrue can emit INITIAL_SESSION with a null session when internal storage read fails,
+      // even after getSession() / SIGNED_IN already set a valid session. Re-read once so we
+      // do not wipe a good session a few seconds later.
+      let sessionToApply = nextSession;
+      if (event === "INITIAL_SESSION" && !nextSession) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          sessionToApply = data.session ?? null;
+        } catch (reReadErr) {
+          console.error("[auth] INITIAL_SESSION null; getSession re-read failed:", reReadErr);
+        }
+      }
 
-      const uid = nextSession?.user?.id;
-      console.log("[auth] onAuthStateChange session user id:", uid ?? "none");
+      setSession(sessionToApply);
+      setUser(sessionToApply?.user ?? null);
 
-      if (nextSession?.user) {
+      const uid = sessionToApply?.user?.id;
+      console.log("[auth] onAuthStateChange", event, "user id:", uid ?? "none");
+
+      if (sessionToApply?.user) {
         setProfileLoading(true);
         setProfileError(null);
         try {
-          const { profile: p, error } = await loadOrCreateProfileWithTimeout(nextSession.user);
+          const { profile: p, error } = await loadOrCreateProfileWithTimeout(sessionToApply.user);
           if (cancelled) return;
           setProfile(p);
           setProfileError(error);
@@ -267,6 +252,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             console.error("[auth] onAuthStateChange profile error:", error);
           } else {
             console.log("[auth] onAuthStateChange profile ok", p ? `role=${p.role}` : "");
+          }
+        } catch (profileErr) {
+          console.error("[auth] onAuthStateChange profile exception:", profileErr);
+          if (!cancelled) {
+            setProfile(null);
+            setProfileError(profileErr instanceof Error ? profileErr.message : "Profile load failed");
           }
         } finally {
           if (!cancelled) {
@@ -286,31 +277,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const setDemoRole = useCallback((role: UserRole) => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(DEMO_STORAGE_KEY, role);
-    }
-    setProfile(demoProfile(role));
-    setProfileError(null);
-  }, []);
-
   const signOut = useCallback(async () => {
-    if (demoMode) {
-      setDemoRole("seeker");
-      return;
-    }
-    try {
-      const supabase = getSupabase();
-      await supabase.auth.signOut();
-    } catch (e) {
-      console.error("[auth] signOut", e);
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase.auth.signOut();
+      } catch (e) {
+        console.error("[auth] signOut", e);
+      }
     }
     setUser(null);
     setSession(null);
     setProfile(null);
     setProfileLoading(false);
     setProfileError(null);
-  }, [demoMode, setDemoRole]);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -320,12 +301,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       profileLoading,
       profileError,
-      demoMode,
       signOut,
       refreshProfile,
-      setDemoRole,
     }),
-    [user, profile, session, loading, profileLoading, profileError, demoMode, signOut, refreshProfile, setDemoRole]
+    [user, profile, session, loading, profileLoading, profileError, signOut, refreshProfile]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

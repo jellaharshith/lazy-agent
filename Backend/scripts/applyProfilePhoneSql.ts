@@ -5,14 +5,20 @@
  *   DATABASE_URL=postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres
  *   SUPABASE_DB_PASSWORD=<Database password from Supabase → Settings → Database>
  *
+ * If db.<ref>.supabase.co fails with ENOTFOUND, see applyResourceMarketplaceSql.ts header
+ * (verbatim DNS + optional pooler / SUPABASE_DB_HOST).
+ *
  * Run: npm run db:apply-profile-phone
  */
+import dns from "node:dns";
 import * as fs from "fs";
 import * as path from "path";
 import dotenv from "dotenv";
 import { Client } from "pg";
+import { resolveSupabaseDbHostname } from "./lib/resolveSupabasePgHost";
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", ".env") });
+dns.setDefaultResultOrder("verbatim");
 
 function projectRefFromUrl(urlStr: string): string | null {
   try {
@@ -52,10 +58,19 @@ async function main() {
       console.error("Could not parse project ref from SUPABASE_URL");
       process.exit(1);
     }
+    const customHost = process.env.SUPABASE_DB_HOST?.trim();
+    const customUser = process.env.SUPABASE_DB_USER?.trim();
+    const customPortRaw = process.env.SUPABASE_DB_PORT?.trim();
+    const customPort =
+      customPortRaw && Number.isFinite(Number(customPortRaw)) ? Number(customPortRaw) : 5432;
+    const logicalHost = customHost || `db.${ref}.supabase.co`;
+    const host = customHost
+      ? logicalHost
+      : await resolveSupabaseDbHostname(logicalHost, "applyProfilePhone");
     client = new Client({
-      host: `db.${ref}.supabase.co`,
-      port: 5432,
-      user: "postgres",
+      host,
+      port: customPort,
+      user: customUser || "postgres",
       password,
       database: "postgres",
       ssl: { rejectUnauthorized: false },

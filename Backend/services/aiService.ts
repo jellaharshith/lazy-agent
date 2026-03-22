@@ -4,10 +4,16 @@ import { geminiModel } from "../config/gemini";
 import { client as openaiClient } from "../config/openai";
 import type { HfClassificationResult } from "./hfService";
 import { classifyWithHF } from "./hfService";
+import { isBedrockConfigured } from "../config/bedrock";
+import {
+  classifyWithBedrock,
+  invokeBedrockUserPrompt,
+  isBedrockUnavailable,
+} from "./bedrockService";
 
 export type NeedType = "food" | "financial" | "emotional" | "none";
 export type UrgencyLevel = "low" | "medium" | "high";
-export type ClassificationSource = "gemini" | "openai" | "fallback";
+export type ClassificationSource = "gemini" | "openai" | "bedrock" | "hf" | "fallback";
 
 export interface NeedClassification {
   need_type: NeedType;
@@ -62,6 +68,8 @@ export interface NearbyCandidateForAi {
 
 export interface AnalyzeNeedInput {
   rawText: string;
+  /** When the client knows the actor (optional; default assume seeker). */
+  role?: "seeker" | "provider";
   lat?: number;
   lng?: number;
   nearbyCandidates?: NearbyCandidateForAi[];
@@ -223,8 +231,24 @@ function classificationFallback(source: ClassificationSource): ClassifiedNeed {
 
 function defaultSearchIntent(): SearchIntent {
   return {
-    keywords: ["food bank", "community kitchen", "restaurant", "supermarket"],
-    priority_types: ["food_bank", "community_kitchen", "restaurant", "supermarket"],
+    keywords: [
+      "food bank",
+      "community kitchen",
+      "grocery",
+      "bakery",
+      "restaurant",
+      "supermarket",
+    ],
+    priority_types: [
+      "food_bank",
+      "community_kitchen",
+      "restaurant",
+      "fast_food",
+      "bakery",
+      "cafe",
+      "grocery",
+      "supermarket",
+    ],
     user_preference: null,
     cuisine_preference: null,
     free_food_preferred: false,
@@ -291,7 +315,8 @@ function defaultStorageTags(): IntakeStorageTags {
 function intakeAnalysisFromBasic(
   n: NeedClassification,
   source: ClassificationSource,
-  hfLabels: HfClassificationResult | null
+  hfLabels: HfClassificationResult | null,
+  reasoningSummaryOverride?: string
 ): IntakeAiAnalysis {
   return {
     need_type: n.need_type,
@@ -303,7 +328,9 @@ function intakeAnalysisFromBasic(
     ranking_hints: defaultRankingHints(),
     ui_content: defaultUiContent(n.need_type),
     storage_tags: defaultStorageTags(),
-    reasoning_summary: "Reduced analysis from primary classifier (rich JSON parse failed).",
+    reasoning_summary:
+      reasoningSummaryOverride?.trim() ||
+      "Reduced analysis from primary classifier (rich JSON parse failed).",
   };
 }
 
@@ -319,13 +346,13 @@ function intakeAnalysisFromHfHelper(hf: HfClassificationResult): IntakeAiAnalysi
     need_type: needType,
     urgency: needType === "food" ? "medium" : "low",
     confidence: Math.max(0.35, Math.min(0.92, confidence)),
-    source: "fallback",
+    source: "hf",
     hf_labels: hf,
     search_intent: defaultSearchIntent(),
     ranking_hints: defaultRankingHints(),
     ui_content: defaultUiContent(needType),
     storage_tags: defaultStorageTags(),
-    reasoning_summary: "Auxiliary model classification (OpenAI unavailable).",
+    reasoning_summary: "Auxiliary Hugging Face classification (OpenAI unavailable).",
   };
 }
 
@@ -347,6 +374,15 @@ function fullFallbackAnalysis(hfLabels: HfClassificationResult | null): IntakeAi
 function buildAnalyzeNeedUserPrompt(input: AnalyzeNeedInput): string {
   const trimmed = input.rawText.trim();
   const ctxLines: string[] = [];
+
+  const roleLine =
+    input.role === "provider"
+      ? 'Role: provider (user may be describing surplus they list — infer categories seekers would match).'
+      : input.role === "seeker"
+        ? "Role: seeker (user is looking for food or help obtaining food)."
+        : "Role: unspecified — assume seeker unless text clearly describes donating/listing surplus.";
+  ctxLines.push(roleLine);
+
   if (
     input.lat != null &&
     input.lng != null &&
@@ -358,7 +394,7 @@ function buildAnalyzeNeedUserPrompt(input: AnalyzeNeedInput): string {
   const cands = input.nearbyCandidates ?? [];
   if (cands.length > 0) {
     ctxLines.push("Nearby options (hints only — server ranks for real):");
-    const cap = Math.min(cands.length, 15);
+    const cap = Math.min(cands.length, 18);
     for (let i = 0; i < cap; i++) {
       const c = cands[i]!;
       const parts = [
@@ -412,9 +448,10 @@ function buildAnalyzeNeedUserPrompt(input: AnalyzeNeedInput): string {
   },
   "reasoning_summary": string
 }
-priority_types ⊆ food_bank, community_kitchen, restaurant, fast_food, supermarket, grocery_store.
-Set ranking_hints true when the user clearly cares (urgent/nearby → distance; cheap → low_price; free/pantry → free_food; expiring deals → soon_expiring).
-Keep ui_content short. One-sentence reasoning_summary.
+priority_types must be drawn from: food_bank, community_kitchen, restaurant, fast_food, bakery, cafe, grocery, supermarket (subset only).
+Infer from text: urgency clues ("today", "now", "starving", "no money"), time-sensitive listings (soon expiring), distance sensitivity ("walking", "near me", "close"), cuisine ("Indian", "halal", "vegan"), free vs cheap vs discounted surplus.
+Set ranking_hints when clear: urgent/nearby → prioritize_distance; budget → prioritize_low_price; pantry/free → prioritize_free_food; day-old / closing / expires → prioritize_soon_expiring. If user insists on walking distance, set nearby_required true.
+Keep ui_content to short, helpful sentences. reasoning_summary: one clear sentence.
 
 User message:
 ${trimmed}`;
@@ -565,39 +602,92 @@ function normalizeIntakeAnalysis(
   };
 }
 
-async function fetchBasicOpenAIClassification(rawText: string): Promise<NeedClassification> {
+/**
+ * Null only when the OpenAI API call fails or returns empty content (enables Bedrock fallback).
+ * Unparseable text still returns the legacy safe tuple with source `openai` (unchanged behavior).
+ */
+async function tryBasicOpenAIClassification(rawText: string): Promise<NeedClassification | null> {
   const trimmed = rawText.trim();
   const userPrompt = buildOpenAIClassificationPrompt(trimmed);
-  const completion = await openaiClient.chat.completions.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    max_tokens: 256,
-    messages: [{ role: "user", content: userPrompt }],
-  });
-  const rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
   try {
-    const parsed = parseClassificationFromModelOutput(rawTextOut, "openai", "OpenAI classify");
-    return { need_type: parsed.need_type, urgency: parsed.urgency, confidence: parsed.confidence };
+    const completion = await openaiClient.chat.completions.create({
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      max_tokens: 256,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+    const rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
+    if (!rawTextOut.trim()) {
+      return null;
+    }
+    try {
+      const parsed = parseClassificationFromModelOutput(rawTextOut, "openai", "OpenAI classify");
+      return { need_type: parsed.need_type, urgency: parsed.urgency, confidence: parsed.confidence };
+    } catch {
+      return { need_type: "none", urgency: "low", confidence: 0.5 };
+    }
   } catch {
-    return { need_type: "none", urgency: "low", confidence: 0.5 };
+    return null;
   }
 }
 
 /**
  * Full hybrid analysis: Hugging Face (optional) + OpenAI (primary), merged safely.
  */
+function shouldBedrockCompareIntake(): boolean {
+  if (!isBedrockConfigured()) return false;
+  const v = process.env.BEDROCK_COMPARE_INTAKE?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+function appendBedrockCrossCheck(
+  analysis: IntakeAiAnalysis,
+  bedrock: Awaited<ReturnType<typeof classifyWithBedrock>>
+): IntakeAiAnalysis {
+  if (!bedrock || isBedrockUnavailable(bedrock)) return analysis;
+  if (bedrock.need_type === analysis.need_type) return analysis;
+  const note =
+    bedrock.reasoning?.trim() ||
+    `Bedrock suggests ${bedrock.need_type} (confidence ${bedrock.confidence.toFixed(2)}).`;
+  const merged = `${analysis.reasoning_summary} Cross-check (Bedrock): ${note}`;
+  return { ...analysis, reasoning_summary: merged.slice(0, 1200) };
+}
+
 function logAiOutcome(
-  path: "rich" | "basic" | "hf" | "fallback",
+  path: "rich" | "basic" | "bedrock-rich" | "bedrock-basic" | "hf" | "fallback",
   input: AnalyzeNeedInput,
   result: IntakeAiAnalysis
 ): void {
   const n = input.nearbyCandidates?.length ?? 0;
-  console.log("[ai]", path, {
-    candidates: n,
+  const hf = result.hf_labels;
+  console.log("[ai] outcome", path, {
+    candidates_to_ai: n,
+    role: input.role ?? null,
     need_type: result.need_type,
+    urgency: result.urgency,
     source: result.source,
-    hf: result.hf_labels?.top_label ?? null,
+    hf_top: hf?.top_label ?? null,
+    hf_scores: hf?.scores ?? null,
+    ranking_hints: result.ranking_hints,
+    search_intent: {
+      cheap: result.search_intent.cheap_food_preferred,
+      free: result.search_intent.free_food_preferred,
+      nearby: result.search_intent.nearby_required,
+      cuisine: result.search_intent.cuisine_preference,
+    },
   });
+  console.log(
+    "[ai] merged_summary:",
+    result.reasoning_summary.slice(0, 220) + (result.reasoning_summary.length > 220 ? "…" : "")
+  );
+}
+
+function logHfOnly(hf: HfClassificationResult | null): void {
+  if (hf) {
+    console.log("[ai] hf_result:", JSON.stringify({ top_label: hf.top_label, scores: hf.scores }));
+  } else {
+    console.log("[ai] hf_result: null (skipped, unconfigured, or failed)");
+  }
 }
 
 export async function analyzeNeedWithContext(input: AnalyzeNeedInput): Promise<IntakeAiAnalysis> {
@@ -608,37 +698,60 @@ export async function analyzeNeedWithContext(input: AnalyzeNeedInput): Promise<I
 
   const userPrompt = buildAnalyzeNeedUserPrompt(input);
 
-  const [hfLabels, richRaw] = await Promise.all([
-    classifyWithHF(trimmed),
-    (async (): Promise<string> => {
-      try {
-        const completion = await openaiClient.chat.completions.create({
-          model: OPENAI_MODEL,
-          temperature: 0.2,
-          max_tokens: 1200,
-          messages: [
-            { role: "system", content: STRICT_JSON_SYSTEM },
-            { role: "user", content: userPrompt },
-          ],
-        });
-        return completion.choices[0]?.message?.content?.trim() ?? "";
-      } catch (err) {
-        logError("[ai] analyzeNeedWithContext (OpenAI rich)", err);
-        return "";
-      }
-    })(),
-  ]);
+  const runBedrockCompare = shouldBedrockCompareIntake();
+
+  const bedrockComparePromise = runBedrockCompare
+    ? classifyWithBedrock({ rawText: trimmed })
+    : Promise.resolve(null);
+
+  /**
+   * Provider order: (1) OpenAI rich → OpenAI basic, (2) Hugging Face if OpenAI did not yield
+   * a usable analysis, (3) Bedrock if both failed, (4) static safe fallback if Bedrock fails.
+   * HF is loaded lazily so we only call it when merging with OpenAI or when OpenAI is exhausted.
+   */
+  let hfLabels: HfClassificationResult | null = null;
+  const ensureHfLabels = async (): Promise<HfClassificationResult | null> => {
+    if (hfLabels === null) {
+      hfLabels = await classifyWithHF(trimmed);
+    }
+    return hfLabels;
+  };
+
+  let richRaw = "";
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      max_tokens: 1400,
+      messages: [
+        { role: "system", content: STRICT_JSON_SYSTEM },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    richRaw = completion.choices[0]?.message?.content?.trim() ?? "";
+  } catch (err) {
+    logError("[ai] analyzeNeedWithContext (OpenAI rich)", err);
+    richRaw = "";
+  }
 
   if (richRaw) {
     try {
       const jsonStr = extractJsonObjectString(richRaw);
       if (jsonStr) {
         const parsed: unknown = JSON.parse(jsonStr);
-        const normalized = normalizeIntakeAnalysis(parsed, "openai", hfLabels);
+        console.log(
+          "[ai] openai_parsed_keys:",
+          parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? Object.keys(parsed as object).join(",")
+            : "(invalid)"
+        );
+        const normalized = normalizeIntakeAnalysis(parsed, "openai", await ensureHfLabels());
         if (normalized) {
           logHfOpenAiDisagreement(hfLabels, normalized.need_type);
-          logAiOutcome("rich", input, normalized);
-          return normalized;
+          const bedrockCompareRaw = await bedrockComparePromise;
+          const withCross = appendBedrockCrossCheck(normalized, bedrockCompareRaw);
+          logAiOutcome("rich", input, withCross);
+          return withCross;
         }
       }
     } catch (err) {
@@ -647,19 +760,71 @@ export async function analyzeNeedWithContext(input: AnalyzeNeedInput): Promise<I
   }
 
   try {
-    const basic = await fetchBasicOpenAIClassification(trimmed);
-    const merged = intakeAnalysisFromBasic(basic, "openai", hfLabels);
-    logHfOpenAiDisagreement(hfLabels, merged.need_type);
-    logAiOutcome("basic", input, merged);
-    return merged;
+    const basic = await tryBasicOpenAIClassification(trimmed);
+    if (basic) {
+      await ensureHfLabels();
+      const merged = intakeAnalysisFromBasic(basic, "openai", hfLabels);
+      logHfOpenAiDisagreement(hfLabels, merged.need_type);
+      const bedrockCompareRaw = await bedrockComparePromise;
+      const withCross = appendBedrockCrossCheck(merged, bedrockCompareRaw);
+      logAiOutcome("basic", input, withCross);
+      return withCross;
+    }
   } catch (err) {
     logError("[ai] analyzeNeedWithContext (basic OpenAI)", err);
   }
+
+  await ensureHfLabels();
+  logHfOnly(hfLabels);
 
   if (hfLabels) {
     const fromHf = intakeAnalysisFromHfHelper(hfLabels);
     logAiOutcome("hf", input, fromHf);
     return fromHf;
+  }
+
+  if (isBedrockConfigured()) {
+    try {
+      const richBedrockRaw = await invokeBedrockUserPrompt(userPrompt);
+      if (!isBedrockUnavailable(richBedrockRaw) && richBedrockRaw) {
+        try {
+          const jsonStr = extractJsonObjectString(richBedrockRaw);
+          if (jsonStr) {
+            const parsed: unknown = JSON.parse(jsonStr);
+            const normalized = normalizeIntakeAnalysis(parsed, "bedrock", hfLabels);
+            if (normalized) {
+              logHfOpenAiDisagreement(hfLabels, normalized.need_type);
+              logAiOutcome("bedrock-rich", input, normalized);
+              return normalized;
+            }
+          }
+        } catch (err) {
+          logError("[ai] analyzeNeedWithContext (parse bedrock rich)", err);
+        }
+      }
+
+      const br = await classifyWithBedrock({ rawText: trimmed });
+      if (!isBedrockUnavailable(br) && br) {
+        const reasoning =
+          br.reasoning?.trim() ||
+          "Amazon Bedrock classifier (OpenAI unavailable; rich JSON not returned).";
+        const merged = intakeAnalysisFromBasic(
+          {
+            need_type: br.need_type,
+            urgency: br.urgency,
+            confidence: br.confidence,
+          },
+          "bedrock",
+          hfLabels,
+          reasoning
+        );
+        logHfOpenAiDisagreement(hfLabels, merged.need_type);
+        logAiOutcome("bedrock-basic", input, merged);
+        return merged;
+      }
+    } catch (err) {
+      logError("[ai] analyzeNeedWithContext (Bedrock)", err);
+    }
   }
 
   const fallback = fullFallbackAnalysis(null);

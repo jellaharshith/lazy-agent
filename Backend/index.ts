@@ -19,6 +19,9 @@ import reservationsRouter from "./routes/reservations";
 import mySeekerRouter from "./routes/mySeeker";
 import dashboardRouter from "./routes/dashboard";
 import voiceRouter from "./routes/voice";
+import geocodeRouter from "./routes/geocode";
+import bedrockTestRouter from "./routes/bedrockTest";
+import s3TestRouter from "./routes/s3Test";
 
 const app = express();
 
@@ -66,12 +69,15 @@ app.use("/api/resources", resourcesRouter);
 app.use("/api/matches", matchesRouter);
 
 app.use("/api/ai", aiRouter);
+app.use("/api/ai", bedrockTestRouter);
 app.use("/api/intake", intakeRouter);
 app.use("/api/my/resources", myResourcesRouter);
 app.use("/api/reservations", reservationsRouter);
 app.use("/api/my", mySeekerRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/voice", voiceRouter);
+app.use("/api/geocode", geocodeRouter);
+app.use("/api/aws", s3TestRouter);
 
 const server = app.listen(listenPort, () => {
   const addr = server.address();

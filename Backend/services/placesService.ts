@@ -5,6 +5,7 @@ import {
   aiRankingHintBonus,
   calculateDistanceKm,
   computeCandidateRankScore,
+  inverseDistanceScore,
   IntakePreferenceContext,
   pickFromRankedPool,
   preferenceRankBonus,
@@ -53,7 +54,10 @@ const PRIORITY_TO_QUERY: Record<string, { keyword: string; type: FoodPlaceType }
   restaurant: { keyword: "restaurant", type: "restaurant" },
   fast_food: { keyword: "fast food", type: "fast_food" },
   supermarket: { keyword: "supermarket", type: "supermarket" },
+  grocery: { keyword: "grocery store", type: "supermarket" },
   grocery_store: { keyword: "grocery store", type: "supermarket" },
+  bakery: { keyword: "bakery", type: "restaurant" },
+  cafe: { keyword: "cafe", type: "restaurant" },
 };
 
 function inferTypeFromKeyword(keyword: string): FoodPlaceType {
@@ -61,8 +65,11 @@ function inferTypeFromKeyword(keyword: string): FoodPlaceType {
   if (k.includes("food bank") || k.includes("pantry")) return "food_bank";
   if (k.includes("community") || k.includes("soup kitchen")) return "community_kitchen";
   if (k.includes("fast food")) return "fast_food";
-  if (k.includes("supermarket") || k.includes("grocery")) return "supermarket";
-  if (k.includes("restaurant") || k.includes("cafe") || k.includes("indian") || k.includes("kitchen")) {
+  if (k.includes("supermarket") || k.includes("grocery store")) return "supermarket";
+  if (k.includes("grocery")) return "supermarket";
+  if (k.includes("bakery")) return "restaurant";
+  if (k.includes("cafe")) return "restaurant";
+  if (k.includes("restaurant") || k.includes("indian") || k.includes("kitchen")) {
     return "restaurant";
   }
   return "restaurant";
@@ -271,6 +278,9 @@ export function pickBestFoodSource(
       isPlace: false,
       urgency: need.urgency,
     });
+    if (need.urgency?.toLowerCase() === "high") {
+      rank += inverseDistanceScore(distanceKm) * 12;
+    }
     rank += preferenceRankBonus(pref, {
       title: r.title,
       subtitle: `${r.resource_type ?? ""} ${r.category ?? ""}`,
@@ -302,6 +312,9 @@ export function pickBestFoodSource(
       isPlace: true,
       urgency: need.urgency,
     });
+    if (need.urgency?.toLowerCase() === "high") {
+      rank += inverseDistanceScore(distanceKm) * 12;
+    }
     rank += preferenceRankBonus(pref, {
       title: p.name,
       subtitle: p.address,

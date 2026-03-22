@@ -1,4 +1,6 @@
 import { getElevenLabsConfig } from "../config/elevenlabs";
+import { isS3Configured } from "../config/s3";
+import { uploadAudioToS3 } from "./storageService";
 import {
   getTwilioConfig,
   isDemoMode,
@@ -40,7 +42,7 @@ function formatPrice(n: number | undefined): string {
   return ` The discounted price is ${n.toFixed(2)} dollars.`;
 }
 
-function buildSeekerSpokenMessage(input: ReservationVoiceCallInput): string {
+export function buildSeekerSpokenMessage(input: ReservationVoiceCallInput): string {
   const title = input.resourceTitle.trim() || "your pickup";
   const greet =
     input.customerName && input.customerName.trim()
@@ -236,9 +238,27 @@ export function buildReservationVoiceScript(resourceTitle: string, expiresAt: st
 }
 
 /**
- * ElevenLabs text-to-speech (MP3). Never throws — returns null on missing config or API failure.
+ * When `S3_BUCKET_NAME` (or legacy `S3_AUDIO_BUCKET`) is set, uploads MP3 after TTS unless explicitly disabled.
+ * Set `S3_UPLOAD_VOICE_TTS=false` to skip uploads while keeping the bucket configured.
  */
-export async function generateVoiceMessage(text: string): Promise<{ audioBase64: string } | null> {
+function shouldUploadTtsToS3(): boolean {
+  if (!isS3Configured()) return false;
+  const v = process.env.S3_UPLOAD_VOICE_TTS?.trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return true;
+}
+
+/**
+ * ElevenLabs text-to-speech (MP3). Never throws — returns null on missing config or API failure.
+ * When S3 is configured (and not opted out), uploads a copy and returns `audioUrl` / `s3Url` / `s3Key`.
+ */
+export async function generateVoiceMessage(text: string): Promise<{
+  audioBase64: string;
+  /** Same as `s3Url` when upload succeeds — convenient for demos and clients. */
+  audioUrl?: string;
+  s3Key?: string;
+  s3Url?: string;
+} | null> {
   const { apiKey } = getElevenLabsConfig();
   const trimmed = typeof text === "string" ? text.trim() : "";
   if (!apiKey || !trimmed) {
@@ -278,7 +298,30 @@ export async function generateVoiceMessage(text: string): Promise<{ audioBase64:
       return null;
     }
 
-    return { audioBase64: buf.toString("base64") };
+    const audioBase64 = buf.toString("base64");
+    const out: {
+      audioBase64: string;
+      audioUrl?: string;
+      s3Key?: string;
+      s3Url?: string;
+    } = { audioBase64 };
+
+    if (shouldUploadTtsToS3()) {
+      const key = `tts/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.mp3`;
+      const uploaded = await uploadAudioToS3(buf, key);
+      if (uploaded) {
+        out.s3Key = uploaded.key;
+        out.s3Url = uploaded.url;
+        out.audioUrl = uploaded.url;
+        console.log("[voiceCall] TTS uploaded to S3:", uploaded.key);
+      } else {
+        console.warn(
+          "[voiceCall] TTS S3 upload unavailable or failed; continuing with base64 audio only"
+        );
+      }
+    }
+
+    return out;
   } catch (err) {
     console.error("[voiceCall] generateVoiceMessage failed:", err);
     return null;

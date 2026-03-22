@@ -372,3 +372,62 @@ export function getMockSurplusData(): MockSurplusResource[] {
     },
   ];
 }
+
+export type GeocodeResult = {
+  lat: number;
+  lng: number;
+  display_name: string;
+};
+
+/** Forward geocode a street address or place name (Nominatim). */
+export async function geocodeForward(query: string): Promise<GeocodeResult | null> {
+  const q = query.trim();
+  if (!q) return null;
+
+  const url = new URL(NOMINATIM_BASE);
+  url.searchParams.set("q", q);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("limit", "1");
+
+  const res = await fetch(url.toString(), {
+    headers: { "User-Agent": USER_AGENT },
+  });
+  if (!res.ok) return null;
+
+  const data = (await res.json()) as NominatimHit[];
+  if (!Array.isArray(data) || data.length === 0) return null;
+
+  const hit = data[0];
+  const lat = hit.lat != null ? Number.parseFloat(hit.lat) : NaN;
+  const lng = hit.lon != null ? Number.parseFloat(hit.lon) : NaN;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const display_name = (hit.display_name ?? "").trim() || q;
+  return { lat, lng, display_name };
+}
+
+/** Reverse geocode coordinates to a display address (Nominatim). */
+export async function geocodeReverse(lat: number, lng: number): Promise<GeocodeResult | null> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const url = new URL("https://nominatim.openstreetmap.org/reverse");
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lng));
+  url.searchParams.set("format", "json");
+
+  const res = await fetch(url.toString(), {
+    headers: { "User-Agent": USER_AGENT },
+  });
+  if (!res.ok) return null;
+
+  const data = (await res.json()) as { lat?: string; lon?: string; display_name?: string };
+  const outLat = data.lat != null ? Number.parseFloat(data.lat) : lat;
+  const outLng = data.lon != null ? Number.parseFloat(data.lon) : lng;
+  if (!Number.isFinite(outLat) || !Number.isFinite(outLng)) return null;
+
+  const display_name = (data.display_name ?? "").trim();
+  if (!display_name) {
+    return { lat: outLat, lng: outLng, display_name: `${lat.toFixed(5)}, ${lng.toFixed(5)}` };
+  }
+  return { lat: outLat, lng: outLng, display_name };
+}

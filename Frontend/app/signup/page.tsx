@@ -79,7 +79,6 @@ export default function SignUpPage() {
         }
 
         router.replace("/dashboard");
-        router.refresh();
         return;
       }
 

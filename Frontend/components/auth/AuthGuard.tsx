@@ -12,18 +12,18 @@ type AuthGuardProps = {
 };
 
 export function AuthGuard({ children, fallback, loadingFallback }: AuthGuardProps) {
-  const { loading, demoMode, session, user } = useAuth();
+  const { loading, session, user } = useAuth();
   const router = useRouter();
   const redirectingRef = useRef(false);
 
   useEffect(() => {
     if (loading) return;
-    if (!demoMode && !user && !session?.user) {
+    if (!user && !session?.user) {
       if (redirectingRef.current) return;
       redirectingRef.current = true;
       router.replace("/signin");
     }
-  }, [loading, demoMode, session?.user, user, router]);
+  }, [loading, session?.user, user, router]);
 
   if (loading) {
     return (
@@ -35,7 +35,7 @@ export function AuthGuard({ children, fallback, loadingFallback }: AuthGuardProp
     );
   }
 
-  if (!demoMode && !session?.user) {
+  if (!session?.user) {
     return (
       <>
         {fallback ?? (

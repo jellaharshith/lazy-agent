@@ -65,34 +65,71 @@ export function scoreResource(urgency: string, distanceKm: number, expiresAt: st
   return Number(s.toFixed(4));
 }
 
+/** Normalized listing kind for ranking + AI context (matches seeded `category` when set). */
+export type ResourceMatchKind =
+  | 'food_bank'
+  | 'community_kitchen'
+  | 'bakery'
+  | 'restaurant'
+  | 'fast_food'
+  | 'grocery'
+  | 'supermarket'
+  | 'cafe';
+
+const CATEGORY_TO_KIND: Record<string, ResourceMatchKind> = {
+  food_bank: 'food_bank',
+  community_kitchen: 'community_kitchen',
+  bakery: 'bakery',
+  restaurant: 'restaurant',
+  fast_food: 'fast_food',
+  grocery: 'grocery',
+  supermarket: 'supermarket',
+  cafe: 'cafe',
+};
+
 /**
- * 0 = food bank, 1 = community kitchen, 2 = restaurant/bakery, 3 = supermarket/grocery.
+ * 0 = food bank, 1 = community kitchen, 2 = restaurant/bakery/cafe/fast food, 3 = supermarket/grocery.
  */
 export function resourceTypeTier(r: Resource): number {
-  const hay = `${r.title} ${r.resource_type}`.toLowerCase();
-  if (hay.includes('food bank') || hay.includes('pantry')) return 0;
-  if (hay.includes('community kitchen') || hay.includes('soup kitchen')) return 1;
-  if (hay.includes('supermarket') || hay.includes('grocery')) return 3;
-  if (
-    hay.includes('restaurant') ||
-    hay.includes('bakery') ||
-    hay.includes('cafe') ||
-    hay.includes('taqueria') ||
-    hay.includes('deli')
-  ) {
-    return 2;
-  }
+  const kind = resourceMatchKind(r);
+  if (kind === 'food_bank') return 0;
+  if (kind === 'community_kitchen') return 1;
+  if (kind === 'supermarket' || kind === 'grocery') return 3;
   return 2;
 }
 
 /** UI / API label for a Supabase resource row. */
-export function resourceMatchKind(
-  r: Resource
-): 'food_bank' | 'community_kitchen' | 'restaurant' | 'supermarket' {
-  const hay = `${r.title} ${r.resource_type}`.toLowerCase();
+export function resourceMatchKind(r: Resource): ResourceMatchKind {
+  const cat = r.category?.toLowerCase().trim();
+  if (cat && cat in CATEGORY_TO_KIND) {
+    return CATEGORY_TO_KIND[cat]!;
+  }
+
+  const hay = `${r.title} ${r.resource_type} ${r.category ?? ''}`.toLowerCase();
   if (hay.includes('food bank') || hay.includes('pantry')) return 'food_bank';
   if (hay.includes('community kitchen') || hay.includes('soup kitchen')) return 'community_kitchen';
-  if (hay.includes('supermarket') || hay.includes('grocery')) return 'supermarket';
+  if (hay.includes('supermarket') || hay.includes('whole foods') || hay.includes('costco')) {
+    return 'supermarket';
+  }
+  if (hay.includes('grocery') || hay.includes('grocery outlet') || hay.includes('foodmaxx')) {
+    return 'grocery';
+  }
+  if (
+    hay.includes('mcdonald') ||
+    hay.includes('taco bell') ||
+    hay.includes('jack in the box') ||
+    hay.includes('wendy') ||
+    hay.includes('subway') ||
+    hay.includes('fast food')
+  ) {
+    return 'fast_food';
+  }
+  if (hay.includes('bakery') || hay.includes('donut') || hay.includes('bread company')) {
+    return 'bakery';
+  }
+  if (hay.includes('cafe') || hay.includes('coffee') || hay.includes('starbucks') || hay.includes("peet's")) {
+    return 'cafe';
+  }
   return 'restaurant';
 }
 
@@ -160,13 +197,17 @@ export function aiRankingHintBonus(opts: {
       else if (d <= 3) b += 20;
       else if (d <= 8) b += 10;
     }
+    const mk = opts.matchKind.toLowerCase();
+    if (mk.includes('grocery') || mk.includes('supermarket')) {
+      b += 6;
+    }
   }
   if (h?.prioritize_soon_expiring && !opts.isPlace) {
     b += expiryPriority(opts.expiresAt) * 18;
   }
   if (h?.prioritize_free_food) {
     const k = opts.matchKind.toLowerCase();
-    if (k.includes("food_bank") || k.includes("community")) b += 22;
+    if (k.includes('food_bank') || k.includes('community')) b += 22;
     const d = opts.discountedPrice;
     if (d != null && Number.isFinite(d) && d <= 0) b += 18;
   }

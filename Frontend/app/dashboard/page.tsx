@@ -169,7 +169,7 @@ function StatTile({
 }
 
 function ProviderAlertPhoneCard() {
-  const { session, profile, demoMode, refreshProfile } = useAuth();
+  const { session, profile, refreshProfile } = useAuth();
   const [phone, setPhone] = useState("");
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -178,9 +178,11 @@ function ProviderAlertPhoneCard() {
     setPhone(profile?.phone_number?.trim() ?? "");
   }, [profile?.phone_number]);
 
-  if (demoMode || !session || profile?.role !== "provider") {
+  if (!session || profile?.role !== "provider") {
     return null;
   }
+
+  const providerUserId = session.user.id;
 
   async function savePhone() {
     setSaving(true);
@@ -191,7 +193,7 @@ function ProviderAlertPhoneCard() {
       const { error } = await supabase
         .from("profiles")
         .update({ phone_number: trimmed || null })
-        .eq("id", session.user.id);
+        .eq("id", providerUserId);
       if (error) {
         setNote(error.message.includes("phone_number") || error.message.includes("column")
           ? "Add column phone_number to profiles (run Backend/sql/add_profile_phone.sql in Supabase)."
@@ -247,12 +249,12 @@ function ProviderAlertPhoneCard() {
 }
 
 function VoiceTestCallPanel() {
-  const { session, demoMode } = useAuth();
+  const { session } = useAuth();
   const [loading, setLoading] = useState(false);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
-  if (demoMode || !session) {
+  if (!session) {
     return null;
   }
 
@@ -549,11 +551,11 @@ function LiveOperationsBoard() {
 }
 
 export default function DashboardPage() {
-  const { profile, demoMode, session, loading, profileLoading } = useAuth();
+  const { profile, session, loading, profileLoading } = useAuth();
   const role = profile?.role ?? "seeker";
   const displayName = profile?.full_name?.trim() || session?.user?.email?.split("@")[0] || "there";
 
-  if (!loading && !demoMode && !session) {
+  if (!loading && !session) {
     return (
       <PageShell>
         <PageHeader
@@ -578,7 +580,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (!loading && !profileLoading && !demoMode && session && !profile) {
+  if (!loading && !profileLoading && session && !profile) {
     return (
       <PageShell>
         <PageHeader title="Dashboard" subtitle="We need your profile to personalize this page." />
@@ -613,11 +615,6 @@ export default function DashboardPage() {
           <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end sm:pt-1">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Signed in as</p>
             <RoleBadge role={role} />
-            {demoMode && (
-              <p className="max-w-xs text-right text-xs text-slate-500">
-                Demo mode: use the header toggle to preview seeker vs provider without signing in.
-              </p>
-            )}
           </div>
         </div>
       </SectionCard>
@@ -686,7 +683,7 @@ export default function DashboardPage() {
       <section className={ui.sectionGap}>
         <SectionCard className="border-dashed border-slate-200 bg-slate-50/60">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Explore</p>
-          <p className="mt-2 text-sm text-slate-600">Original multi-step concept demo.</p>
+          <p className="mt-2 text-sm text-slate-600">Original multi-step intake flow.</p>
           <Link href="/flow" className={ui.secondaryButton + " mt-4"}>
             Open flow
           </Link>

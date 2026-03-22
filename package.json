@@ -3,12 +3,16 @@
     "dev:backend": "ts-node --transpile-only Backend/index.ts",
     "rum": "ts-node --transpile-only Backend/index.ts",
     "seed:public": "ts-node --transpile-only Backend/scripts/seedPublicData.ts",
+    "seed:resources": "ts-node --transpile-only Backend/scripts/seedResources.ts",
     "twilio:ping": "ts-node --transpile-only Backend/scripts/twilioPing.ts",
     "twilio:test-call": "ts-node --transpile-only Backend/scripts/twilioTestCall.ts",
-    "db:apply-profile-phone": "ts-node --transpile-only Backend/scripts/applyProfilePhoneSql.ts"
+    "db:apply-profile-phone": "ts-node --transpile-only Backend/scripts/applyProfilePhoneSql.ts",
+    "db:apply-resource-marketplace": "ts-node --transpile-only Backend/scripts/applyResourceMarketplaceSql.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1014.0",
+    "@aws-sdk/client-s3": "^3.1014.0",
     "@google/generative-ai": "^0.24.1",
     "@react-google-maps/api": "^2.20.8",
     "@supabase/supabase-js": "^2.99.3",

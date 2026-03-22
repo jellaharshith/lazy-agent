@@ -5,10 +5,14 @@ import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/requireRole";
 import { insertReservation } from "../services/reservationService";
 import {
+  buildSeekerSpokenMessage,
+  generateVoiceMessage,
   sendProviderReservationAlertCall,
   sendSeekerReservationCall,
   type ReservationVoiceCallInput,
 } from "../services/voiceCallService";
+import { uploadBufferToS3 } from "../services/storageService";
+import { isS3Configured } from "../config/s3";
 
 const router = Router();
 
@@ -148,6 +152,56 @@ router.post("/", requireAuth, requireRole(["seeker"]), async (req: Request, res:
     };
     const providerCall = await sendProviderReservationAlertCall(baseProvider);
 
+    const confirmationText = buildSeekerSpokenMessage(baseSeeker);
+    type StoragePayload =
+      | { attempted: true; success: true; provider: "aws-s3"; key: string; url: string }
+      | { attempted: true; success: false; provider: "aws-s3"; message: string };
+
+    let storage: StoragePayload;
+    if (!isS3Configured()) {
+      storage = {
+        attempted: true,
+        success: false,
+        provider: "aws-s3",
+        message: "S3 upload unavailable",
+      };
+    } else {
+      const tts = await generateVoiceMessage(confirmationText);
+      const mp3Buf =
+        tts?.audioBase64 && tts.audioBase64.length > 0
+          ? Buffer.from(tts.audioBase64, "base64")
+          : null;
+
+      const upload = mp3Buf
+        ? await uploadBufferToS3({
+            buffer: mp3Buf,
+            key: `reservations/${reservation.id}/confirmation.mp3`,
+            contentType: "audio/mpeg",
+          })
+        : await uploadBufferToS3({
+            buffer: Buffer.from(confirmationText, "utf8"),
+            key: `reservations/${reservation.id}/confirmation.txt`,
+            contentType: "text/plain; charset=utf-8",
+          });
+
+      if (upload.success) {
+        storage = {
+          attempted: true,
+          success: true,
+          provider: "aws-s3",
+          key: upload.key,
+          url: upload.url,
+        };
+      } else {
+        storage = {
+          attempted: true,
+          success: false,
+          provider: "aws-s3",
+          message: upload.message || "S3 upload unavailable",
+        };
+      }
+    }
+
     const admin = getSupabaseAdmin();
     if (admin && providerCall.success) {
       const { error: updErr } = await admin
@@ -164,6 +218,7 @@ router.post("/", requireAuth, requireRole(["seeker"]), async (req: Request, res:
     return res.status(201).json({
       success: true,
       reservation,
+      storage,
       voiceCalls: {
         seeker: {
           attempted: seekerCall.attempted,

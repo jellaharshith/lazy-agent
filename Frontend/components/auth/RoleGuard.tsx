@@ -15,17 +15,16 @@ type RoleGuardProps = {
 };
 
 export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
-  const { loading, profileLoading, profile, profileError, demoMode, session, setDemoRole, refreshProfile } =
-    useAuth();
+  const { loading, profileLoading, profile, profileError, session, refreshProfile } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (loading || demoMode || profileLoading) return;
+    if (loading || profileLoading) return;
     if (!profile) return;
     if (!allowedRoles.includes(profile.role)) {
       router.replace("/dashboard");
     }
-  }, [loading, demoMode, profileLoading, profile, allowedRoles, router]);
+  }, [loading, profileLoading, profile, allowedRoles, router]);
 
   if (loading) {
     return (
@@ -33,7 +32,7 @@ export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
     );
   }
 
-  if (!demoMode && session?.user && profileLoading) {
+  if (session?.user && profileLoading) {
     const meta = session.user.user_metadata as { role?: string } | undefined;
     const metaRole = meta?.role === "provider" || meta?.role === "seeker" ? meta.role : null;
     if (metaRole && (allowedRoles as readonly string[]).includes(metaRole)) {
@@ -45,7 +44,7 @@ export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
   }
 
   function roleGate(): ReactNode {
-    if (!demoMode && session?.user && !profile) {
+    if (session?.user && !profile) {
       if (profileError) {
         return (
           <main className="mx-auto max-w-2xl px-6 py-12">
@@ -84,66 +83,13 @@ export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
       );
     }
 
-    if (demoMode && !profile) {
-      return (
-        <main className="mx-auto max-w-2xl px-6 py-12">
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-950">
-            <h1 className="text-lg font-semibold">Profile not found</h1>
-            <p className="mt-2 text-sm text-amber-900">Try refreshing the page.</p>
-            <Link href="/dashboard" className={`${ui.primaryButton} mt-4 inline-flex`}>
-              Dashboard
-            </Link>
-          </div>
-        </main>
-      );
-    }
-
     if (profile && allowedRoles.includes(profile.role)) {
       return <>{children}</>;
     }
 
-    if (!demoMode && profile && !allowedRoles.includes(profile.role)) {
+    if (profile && !allowedRoles.includes(profile.role)) {
       return (
         <main className="mx-auto max-w-2xl px-6 py-12 text-sm text-slate-600">Loading...</main>
-      );
-    }
-
-    if (demoMode && profile && !allowedRoles.includes(profile.role)) {
-      return (
-        <main className="mx-auto max-w-2xl px-6 py-12">
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-950">
-            <h1 className="text-lg font-semibold">This page is not available for your role.</h1>
-            <p className="mt-2 text-sm text-amber-900">
-              Switch demo role or use the dashboard to continue.
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {allowedRoles.includes("seeker") && (
-                <button
-                  type="button"
-                  onClick={() => setDemoRole("seeker")}
-                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
-                >
-                  Demo: seeker
-                </button>
-              )}
-              {allowedRoles.includes("provider") && (
-                <button
-                  type="button"
-                  onClick={() => setDemoRole("provider")}
-                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
-                >
-                  Demo: provider
-                </button>
-              )}
-              <Link
-                href="/dashboard"
-                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Dashboard
-              </Link>
-            </div>
-          </div>
-        </main>
       );
     }
 

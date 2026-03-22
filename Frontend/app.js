@@ -56,6 +56,16 @@ function renderClassification(c) {
   }
 }
 
+function formatMatchSource(source) {
+  if (source == null || source === "") return source;
+  const map = {
+    supabase: "Partner listing",
+    google_places: "Google Maps",
+    osm: "Open directory",
+  };
+  return map[source] ?? String(source).replace(/_/g, " ");
+}
+
 function renderBestMatch(bestMatch) {
   outBestMatch.innerHTML = "";
   if (bestMatch == null) {
@@ -73,7 +83,7 @@ function renderBestMatch(bestMatch) {
     ["quantity", bestMatch.quantity],
     ["distanceKm", bestMatch.distanceKm],
     ["expiresAt", bestMatch.expiresAt],
-    ["source", bestMatch.source],
+    ["listing", formatMatchSource(bestMatch.source)],
   ];
   for (const [key, val] of entries) {
     if (val === undefined || val === null) continue;

@@ -8,10 +8,9 @@ import { RoleGuard } from "@/components/auth/RoleGuard";
 import { ProviderResourceCard, type ProviderResourceRow } from "@/components/provider/ProviderResourceCard";
 import { EmptyState, PageHeader, PageShell, SectionCard, StatusCard, ui } from "@/components/ui/app-ui";
 
-const DEFAULT_LAT = 37.6688;
-const DEFAULT_LNG = -122.0808;
-
 const RESOURCE_TYPES = ["food", "bakery", "produce", "prepared", "other"] as const;
+
+type LocationPin = { lat: number; lng: number; display_name: string };
 
 function AddResourceContent() {
   const { session } = useAuth();
@@ -22,8 +21,8 @@ function AddResourceContent() {
   const [originalPrice, setOriginalPrice] = useState("");
   const [discountedPrice, setDiscountedPrice] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
-  const [lat, setLat] = useState(String(DEFAULT_LAT));
-  const [lng, setLng] = useState(String(DEFAULT_LNG));
+  const [pickupAddress, setPickupAddress] = useState("");
+  const [pin, setPin] = useState<LocationPin | null>(null);
   const [loading, setLoading] = useState(false);
   const [listLoading, setListLoading] = useState(true);
   const [success, setSuccess] = useState<string | null>(null);
@@ -31,6 +30,7 @@ function AddResourceContent() {
   const [listError, setListError] = useState<string | null>(null);
   const [resources, setResources] = useState<ProviderResourceRow[]>([]);
   const [geoLoading, setGeoLoading] = useState(false);
+  const [lookupLoading, setLookupLoading] = useState(false);
   const successRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,22 +39,99 @@ function AddResourceContent() {
     }
   }, [success]);
 
+  async function handleLookupAddress() {
+    if (!session?.access_token) {
+      setError("You must be signed in to look up an address.");
+      return;
+    }
+    const q = pickupAddress.trim();
+    if (!q) {
+      setError("Enter a street address or place name, then look it up.");
+      return;
+    }
+    setLookupLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(apiUrl("/api/geocode/forward"), {
+        method: "POST",
+        headers: jsonHeaders(session),
+        body: JSON.stringify({ query: q }),
+      });
+      const data = (await res.json()) as LocationPin & { error?: string };
+      if (!res.ok) {
+        setPin(null);
+        setError(data.error ?? "Could not find that address.");
+        return;
+      }
+      if (
+        typeof data.lat !== "number" ||
+        typeof data.lng !== "number" ||
+        typeof data.display_name !== "string"
+      ) {
+        setPin(null);
+        setError("Unexpected response from geocoder.");
+        return;
+      }
+      setPin({ lat: data.lat, lng: data.lng, display_name: data.display_name });
+      setPickupAddress(data.display_name);
+    } catch {
+      setPin(null);
+      setError("Address lookup failed. Check your connection and try again.");
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
   function handleUseMyLocation() {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setError("Location is not available in this browser.");
       return;
     }
+    if (!session?.access_token) {
+      setError("You must be signed in to use your location.");
+      return;
+    }
     setGeoLoading(true);
     setError(null);
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLat(String(pos.coords.latitude));
-        setLng(String(pos.coords.longitude));
-        setGeoLoading(false);
+      async (pos) => {
+        const la = pos.coords.latitude;
+        const ln = pos.coords.longitude;
+        try {
+          const res = await fetch(apiUrl("/api/geocode/reverse"), {
+            method: "POST",
+            headers: jsonHeaders(session),
+            body: JSON.stringify({ lat: la, lng: ln }),
+          });
+          const data = (await res.json()) as LocationPin & { error?: string };
+          if (!res.ok) {
+            setPin({ lat: la, lng: ln, display_name: `${la.toFixed(5)}, ${ln.toFixed(5)}` });
+            setPickupAddress("");
+            setError(data.error ?? "Could not resolve address; coordinates are still saved for the listing.");
+            setGeoLoading(false);
+            return;
+          }
+          if (
+            typeof data.lat !== "number" ||
+            typeof data.lng !== "number" ||
+            typeof data.display_name !== "string"
+          ) {
+            setPin({ lat: la, lng: ln, display_name: `${la.toFixed(5)}, ${ln.toFixed(5)}` });
+          } else {
+            setPin({ lat: data.lat, lng: data.lng, display_name: data.display_name });
+            setPickupAddress(data.display_name);
+          }
+        } catch {
+          setPin({ lat: la, lng: ln, display_name: `${la.toFixed(5)}, ${ln.toFixed(5)}` });
+          setPickupAddress("");
+          setError("Could not resolve address; coordinates from your device are still saved.");
+        } finally {
+          setGeoLoading(false);
+        }
       },
       () => {
         setGeoLoading(false);
-        setError("Could not read your location. Enter lat/lng manually.");
+        setError("Could not read your location. Try entering an address instead.");
       },
       { enableHighAccuracy: false, maximumAge: 60_000, timeout: 15_000 }
     );
@@ -101,8 +178,8 @@ function AddResourceContent() {
     setOriginalPrice("");
     setDiscountedPrice("");
     setExpiresAt("");
-    setLat(String(DEFAULT_LAT));
-    setLng(String(DEFAULT_LNG));
+    setPickupAddress("");
+    setPin(null);
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -122,10 +199,8 @@ function AddResourceContent() {
       setError("Quantity must be a whole number.");
       return;
     }
-    const latN = Number(lat);
-    const lngN = Number(lng);
-    if (!Number.isFinite(latN) || !Number.isFinite(lngN)) {
-      setError("Latitude and longitude must be valid numbers.");
+    if (!pin) {
+      setError('Set pickup location: enter an address and click "Look up address", or use "Use my location".');
       return;
     }
 
@@ -135,8 +210,8 @@ function AddResourceContent() {
         title: title.trim(),
         resource_type: resourceType.trim() || "food",
         quantity: q,
-        lat: latN,
-        lng: lngN,
+        lat: pin.lat,
+        lng: pin.lng,
       };
       if (category.trim()) body.category = category.trim();
       if (originalPrice.trim()) {
@@ -274,27 +349,47 @@ function AddResourceContent() {
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <span className={ui.fieldLabel}>Pickup location</span>
-                <p className="mt-0.5 text-xs text-slate-400">Lat and lng for the map and distance match.</p>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  Street address or place name. We convert it to a map pin for distance matching.
+                </p>
               </div>
               <button
                 type="button"
                 onClick={handleUseMyLocation}
-                disabled={geoLoading}
+                disabled={geoLoading || lookupLoading}
                 className={ui.secondaryButton + " py-1.5 text-xs"}
               >
                 {geoLoading ? "Locating…" : "Use my location"}
               </button>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-4">
-              <label className={ui.fieldLabel}>
-                Latitude
-                <input value={lat} onChange={(e) => setLat(e.target.value)} required className={ui.input} />
-              </label>
-              <label className={ui.fieldLabel}>
-                Longitude
-                <input value={lng} onChange={(e) => setLng(e.target.value)} required className={ui.input} />
-              </label>
+            <label className="mt-2 block">
+              <span className={ui.fieldLabel}>Address</span>
+              <textarea
+                value={pickupAddress}
+                onChange={(e) => {
+                  setPickupAddress(e.target.value);
+                  setPin(null);
+                }}
+                rows={2}
+                className={ui.input + " mt-2 min-h-[4.5rem] resize-y"}
+                placeholder="e.g. 777 B St, Hayward, CA 94541"
+              />
+            </label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleLookupAddress()}
+                disabled={lookupLoading || geoLoading || !pickupAddress.trim()}
+                className={ui.secondaryButton + " py-1.5 text-xs"}
+              >
+                {lookupLoading ? "Looking up…" : "Look up address"}
+              </button>
             </div>
+            {pin && (
+              <p className="mt-2 text-xs text-slate-600">
+                <span className="font-medium text-slate-700">Pinned:</span> {pin.display_name}
+              </p>
+            )}
           </div>
 
           <button type="submit" disabled={loading} className={ui.primaryButton + " w-full justify-center py-3 text-base sm:w-auto"}>

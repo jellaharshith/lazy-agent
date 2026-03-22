@@ -21,7 +21,7 @@ const heroContent: SurplusLinkHeroProps = {
     "AI detects urgent need signals and connects people to nearby surplus meals, community fridges, and food support in real time.",
   primaryAction: { label: "Find Help", href: "/need" },
   secondaryAction: { label: "Share Resources", href: "/resources" },
-  disclaimer: "*Demo uses mock live match data for hackathon presentation",
+  disclaimer: "Sign in to request food and see matches from listings in your area.",
   socialProof: "128 meals rescued today • 42 nearby resources",
   socialAvatars: [
     {
@@ -191,21 +191,18 @@ export function SurplusLinkLandingDemo() {
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <a
-                href="mailto:hello@surpluslink.demo"
+                href="mailto:hello@surpluslink.org"
                 className="inline-flex items-center justify-center rounded-2xl bg-emerald-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
               >
-                hello@surpluslink.demo
+                hello@surpluslink.org
               </a>
               <Link
                 href="/flow"
                 className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               >
-                Open live demo
+                Open intake flow
               </Link>
             </div>
-            <p className="mt-6 text-xs text-slate-500">
-              This contact email is a demo placeholder for the hackathon presentation.
-            </p>
           </div>
         </div>
       </section>

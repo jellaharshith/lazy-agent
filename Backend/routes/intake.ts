@@ -283,7 +283,7 @@ router.get("/", (_req: Request, res: Response) => {
       message: "Intake API",
       usage: {
         intake:
-          "POST /api/intake — body: { raw_text: string, lat: number, lng: number }; optional Authorization: Bearer",
+          "POST /api/intake — body: { raw_text, lat, lng, role?: 'seeker'|'provider' }; optional Authorization: Bearer",
       },
     });
   } catch (err) {
@@ -295,14 +295,16 @@ router.get("/", (_req: Request, res: Response) => {
 
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { raw_text, lat, lng } = req.body ?? {};
+    const { raw_text, lat, lng, role: roleRaw } = req.body ?? {};
 
     if (typeof raw_text !== "string" || !raw_text.trim()) {
       return res.status(400).json({ error: "raw_text is required" });
     }
 
     const text = raw_text.trim();
-    console.log("[POST /api/intake] raw_text received:", text);
+    const role =
+      roleRaw === "seeker" || roleRaw === "provider" ? roleRaw : undefined;
+    console.log("[POST /api/intake] raw_text received:", text, role ? `role=${role}` : "");
 
     const latNum = Number(lat);
     const lngNum = Number(lng);
@@ -354,7 +356,20 @@ router.post("/", async (req: Request, res: Response) => {
       lat: latNum,
       lng: lngNum,
       nearbyCandidates,
+      ...(role ? { role } : {}),
     });
+
+    console.log(
+      "[POST /api/intake] ai_merged:",
+      JSON.stringify({
+        need_type: analysis.need_type,
+        urgency: analysis.urgency,
+        confidence: analysis.confidence,
+        source: analysis.source,
+        hf_top: analysis.hf_labels?.top_label ?? null,
+        candidates_used: nearbyCandidates.length,
+      })
+    );
 
     const classification: ClassifiedNeed = {
       need_type: analysis.need_type,
@@ -464,11 +479,20 @@ router.post("/", async (req: Request, res: Response) => {
     if (bestSource) {
       const winner =
         bestSource.source === "supabase"
-          ? { ranking_source: bestSource.source, title: bestSource.resource.title }
-          : { ranking_source: bestSource.source, title: bestSource.place.name };
-      console.log("[POST /api/intake] ranking winner:", JSON.stringify(winner));
+          ? {
+              ranking_source: bestSource.source,
+              title: bestSource.resource.title,
+              resource_id: bestSource.resource.id,
+              distance_km: bestSource.distanceKm,
+            }
+          : {
+              ranking_source: bestSource.source,
+              title: bestSource.place.name,
+              distance_km: bestSource.distanceKm,
+            };
+      console.log("[POST /api/intake] final_match:", JSON.stringify(winner));
     } else {
-      console.log("[POST /api/intake] ranking winner: null");
+      console.log("[POST /api/intake] final_match: null");
     }
 
     if (!bestSource) {

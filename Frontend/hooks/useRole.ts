@@ -3,7 +3,7 @@
 import { useAuth } from "@/context/AuthContext";
 
 /**
- * Role helpers for hackathon UI (seeker vs provider flows).
+ * Role helpers for seeker vs provider flows (profile row, then signup metadata).
  */
 export function useRole() {
   const { profile, session } = useAuth();

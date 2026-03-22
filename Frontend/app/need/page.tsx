@@ -12,7 +12,8 @@ export default function NeedPage() {
 
       <SectionCard className={ui.sectionGap}>
         <p className="text-sm leading-6 text-slate-700">
-          This demo route takes you to the main polished intake path and shows an immediate match result when available.
+          Continue to describe what you need in one sentence. We will look for nearby food support and show matches when
+          available.
         </p>
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
           <Link href="/request-food" className={ui.primaryButton}>

@@ -32,7 +32,6 @@ export default function SignInPage() {
         return;
       }
       router.replace("/dashboard");
-      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -46,9 +45,20 @@ export default function SignInPage() {
         <SectionCard className="p-7 sm:p-8">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Welcome back</p>
           <h1 className={ui.title + " mt-2"}>Sign in</h1>
-          <p className="mt-2 text-sm text-slate-600">
-            Use your Supabase account. Without env keys, run the app in local demo mode from the landing page.
-          </p>
+          <p className="mt-2 text-sm text-slate-600">Sign in to continue to your dashboard, requests, and matches.</p>
+
+          {!isSupabaseConfigured() ? (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+              <p className="font-medium">Auth is not wired yet</p>
+              <p className="mt-1 text-amber-900/90">
+                Add <code className="rounded bg-white/80 px-1 text-xs">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+                <code className="rounded bg-white/80 px-1 text-xs">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> to{" "}
+                <code className="rounded bg-white/80 px-1 text-xs">.env.local</code> (or the repo root{" "}
+                <code className="rounded bg-white/80 px-1 text-xs">.env</code> if you use the shared Next config), then
+                restart <code className="rounded bg-white/80 px-1 text-xs">next dev</code>.
+              </p>
+            </div>
+          ) : null}
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
             <label className={ui.fieldLabel}>
