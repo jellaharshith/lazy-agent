@@ -1,9 +1,15 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import { AppLayout } from "@/components/AppLayout";
+import { Providers } from "./providers";
+
+const inter = Inter({ subsets: ["latin"], display: "swap" });
 
 export const metadata: Metadata = {
-  title: "Intent Commons",
-  description: "AI connects hidden needs to nearby unused resources.",
+  title: "SurplusLink — Surplus food rescue",
+  description:
+    "AI detects urgent need signals and connects people to nearby surplus meals, community fridges, and food support in real time.",
 };
 
 export default function RootLayout({
@@ -13,7 +19,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className={inter.className}>
+        <Providers>
+          <AppLayout>{children}</AppLayout>
+        </Providers>
+      </body>
     </html>
   );
 }

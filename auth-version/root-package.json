@@ -1,0 +1,25 @@
+{
+  "scripts": {
+    "dev:backend": "ts-node --transpile-only Backend/index.ts",
+    "supabase:autoconfirm": "node scripts/supabase-auth-dev-autoconfirm.mjs",
+    "create-test-users": "node scripts/create-test-users.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/generative-ai": "^0.24.1",
+    "@react-google-maps/api": "^2.20.8",
+    "@supabase/supabase-js": "^2.99.3",
+    "axios": "^1.13.6",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "openai": "^6.32.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -17,6 +17,37 @@ export interface ClassifiedNeed extends NeedClassification {
   source: ClassificationSource;
 }
 
+/** Rich intake analysis (orchestration layer — no external APIs besides OpenAI). */
+export interface SearchIntent {
+  keywords: string[];
+  priority_types: string[];
+  user_preference: string | null;
+  free_food_preferred: boolean;
+  cheap_food_preferred: boolean;
+}
+
+export interface IntakeUiContent {
+  message: string;
+  summary: string;
+}
+
+export interface IntakeStorageTags {
+  category: string | null;
+  priority_score: number | null;
+  request_label: string | null;
+  preference_text: string | null;
+}
+
+export interface IntakeAiAnalysis {
+  need_type: NeedType;
+  urgency: UrgencyLevel;
+  confidence: number;
+  source: ClassificationSource;
+  search_intent: SearchIntent;
+  ui_content: IntakeUiContent;
+  storage_tags: IntakeStorageTags;
+}
+
 const NEED_TYPES: readonly NeedType[] = ["food", "financial", "emotional", "none"];
 const URGENCY_LEVELS: readonly UrgencyLevel[] = ["low", "medium", "high"];
 
@@ -158,6 +189,260 @@ function classificationFallback(source: ClassificationSource): ClassifiedNeed {
   };
 }
 
+function defaultSearchIntent(): SearchIntent {
+  return {
+    keywords: ["food bank", "community kitchen", "restaurant", "supermarket"],
+    priority_types: ["food_bank", "community_kitchen", "restaurant", "supermarket"],
+    user_preference: null,
+    free_food_preferred: false,
+    cheap_food_preferred: false,
+  };
+}
+
+function defaultUiContent(needType: string): IntakeUiContent {
+  const t = needType.toLowerCase();
+  if (t === "food") {
+    return {
+      message: "We found a meal available nearby.",
+      summary: "Food need detected and matched to a nearby discounted food option.",
+    };
+  }
+  return {
+    message: "We received your request.",
+    summary: "Your need was understood and recorded.",
+  };
+}
+
+function defaultStorageTags(): IntakeStorageTags {
+  return {
+    category: null,
+    priority_score: null,
+    request_label: null,
+    preference_text: null,
+  };
+}
+
+function intakeAnalysisFromBasic(
+  n: NeedClassification,
+  source: ClassificationSource
+): IntakeAiAnalysis {
+  return {
+    need_type: n.need_type,
+    urgency: n.urgency,
+    confidence: n.confidence,
+    source,
+    search_intent: defaultSearchIntent(),
+    ui_content: defaultUiContent(n.need_type),
+    storage_tags: defaultStorageTags(),
+  };
+}
+
+function buildOpenAIRichIntakePrompt(rawText: string): string {
+  return `You are an assistant for a surplus food marketplace. Analyze the user's message and return ONLY valid JSON with this shape (no markdown):
+{
+  "need_type": "food | financial | emotional | none",
+  "urgency": "low | medium | high",
+  "confidence": number,
+  "search_intent": {
+    "keywords": string[],
+    "priority_types": string[],
+    "user_preference": string | null,
+    "free_food_preferred": boolean,
+    "cheap_food_preferred": boolean
+  },
+  "ui_content": {
+    "message": string,
+    "summary": string
+  },
+  "storage_tags": {
+    "category": string | null,
+    "priority_score": number | null,
+    "request_label": string | null,
+    "preference_text": string | null
+  }
+}
+Rules:
+- priority_types should be a subset of: food_bank, community_kitchen, restaurant, fast_food, supermarket, grocery_store.
+- keywords should help find nearby places (short phrases).
+- If the user mentions cuisine (e.g. Indian), put it in storage_tags.preference_text and search_intent.user_preference.
+- ui_content should be short, friendly, demo-ready.
+
+User message:
+${rawText}`;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource): IntakeAiAnalysis | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const o = parsed as Record<string, unknown>;
+  const { need_type, urgency, confidence } = o;
+  if (!isNeedType(need_type) || !isUrgency(urgency)) return null;
+  const c =
+    typeof confidence === "number"
+      ? confidence
+      : typeof confidence === "string"
+        ? Number(confidence)
+        : NaN;
+  if (!Number.isFinite(c) || c < 0 || c > 1) return null;
+
+  const si = o.search_intent && typeof o.search_intent === "object" && !Array.isArray(o.search_intent)
+    ? (o.search_intent as Record<string, unknown>)
+    : null;
+  const keywords = si && isStringArray(si.keywords) ? si.keywords : defaultSearchIntent().keywords;
+  const priorityTypes =
+    si && isStringArray(si.priority_types) ? si.priority_types : defaultSearchIntent().priority_types;
+  const userPref =
+    si && typeof si.user_preference === "string"
+      ? si.user_preference
+      : si && si.user_preference === null
+        ? null
+        : null;
+  const freePref = si && typeof si.free_food_preferred === "boolean" ? si.free_food_preferred : false;
+  const cheapPref = si && typeof si.cheap_food_preferred === "boolean" ? si.cheap_food_preferred : false;
+
+  const ui = o.ui_content && typeof o.ui_content === "object" && !Array.isArray(o.ui_content)
+    ? (o.ui_content as Record<string, unknown>)
+    : null;
+  const msg =
+    ui && typeof ui.message === "string" && ui.message.trim()
+      ? ui.message.trim()
+      : defaultUiContent(need_type).message;
+  const sum =
+    ui && typeof ui.summary === "string" && ui.summary.trim()
+      ? ui.summary.trim()
+      : defaultUiContent(need_type).summary;
+
+  const st = o.storage_tags && typeof o.storage_tags === "object" && !Array.isArray(o.storage_tags)
+    ? (o.storage_tags as Record<string, unknown>)
+    : null;
+  const category =
+    st == null
+      ? null
+      : typeof st.category === "string"
+        ? st.category
+        : st.category === null
+          ? null
+          : null;
+  const priorityScore =
+    st != null && typeof st.priority_score === "number" && Number.isFinite(st.priority_score)
+      ? Math.round(st.priority_score)
+      : st?.priority_score === null
+        ? null
+        : null;
+  const requestLabel =
+    st == null
+      ? null
+      : typeof st.request_label === "string"
+        ? st.request_label
+        : st.request_label === null
+          ? null
+          : null;
+  const prefText =
+    st == null
+      ? null
+      : typeof st.preference_text === "string"
+        ? st.preference_text
+        : st.preference_text === null
+          ? null
+          : null;
+
+  return {
+    need_type,
+    urgency,
+    confidence: c,
+    source,
+    search_intent: {
+      keywords,
+      priority_types: priorityTypes,
+      user_preference: userPref,
+      free_food_preferred: freePref,
+      cheap_food_preferred: cheapPref,
+    },
+    ui_content: { message: msg, summary: sum },
+    storage_tags: {
+      category,
+      priority_score: priorityScore,
+      request_label: requestLabel,
+      preference_text: prefText,
+    },
+  };
+}
+
+async function fetchBasicOpenAIClassification(rawText: string): Promise<NeedClassification> {
+  const trimmed = rawText.trim();
+  const userPrompt = buildOpenAIClassificationPrompt(trimmed);
+  const completion = await openaiClient.chat.completions.create({
+    model: OPENAI_MODEL,
+    temperature: 0.2,
+    max_tokens: 256,
+    messages: [{ role: "user", content: userPrompt }],
+  });
+  const rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
+  try {
+    const parsed = parseClassificationFromModelOutput(rawTextOut, "openai", "OpenAI classify");
+    return { need_type: parsed.need_type, urgency: parsed.urgency, confidence: parsed.confidence };
+  } catch {
+    return { need_type: "none", urgency: "low", confidence: 0.5 };
+  }
+}
+
+/**
+ * Full AI intake analysis: intent, preferences, UI copy, and DB tags.
+ * Does not call Google or DB — only OpenAI.
+ */
+export async function analyzeIntakeNeed(rawText: string): Promise<IntakeAiAnalysis> {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    throw new Error("rawText must be non-empty");
+  }
+
+  const userPrompt = buildOpenAIRichIntakePrompt(trimmed);
+  console.log("[ai] analyzeIntakeNeed: provider used: openai");
+
+  let rawTextOut: string;
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+    rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
+  } catch (err) {
+    logError("[ai] analyzeIntakeNeed (chat.completions.create)", err);
+    throw err;
+  }
+
+  console.log("[ai] analyzeIntakeNeed: raw model response:", rawTextOut);
+
+  try {
+    const jsonStr = extractJsonObjectString(rawTextOut);
+    if (!jsonStr) throw new Error("no JSON object");
+    const parsed: unknown = JSON.parse(jsonStr);
+    const normalized = normalizeIntakeAnalysis(parsed, "openai");
+    if (normalized) {
+      console.log("[ai] analyzeIntakeNeed: parsed rich result");
+      return normalized;
+    }
+  } catch (err) {
+    logError("[ai] analyzeIntakeNeed (parse rich)", err);
+  }
+
+  try {
+    const basic = await fetchBasicOpenAIClassification(trimmed);
+    return intakeAnalysisFromBasic(basic, "openai");
+  } catch (err) {
+    logError("[ai] analyzeIntakeNeed (fallback basic)", err);
+    return intakeAnalysisFromBasic(
+      { need_type: "none", urgency: "low", confidence: 0.5 },
+      "openai"
+    );
+  }
+}
+
 /** Read text from a generateContent result without relying only on .text() (handles edge cases). */
 export function getModelResponseText(result: GenerateContentResult): string {
   const response = result.response;
@@ -209,45 +494,17 @@ export function getModelResponseText(result: GenerateContentResult): string {
 }
 
 export async function classifyNeedWithOpenAI(rawText: string): Promise<ClassifiedNeed> {
-  const trimmed = rawText.trim();
-  if (!trimmed) {
-    throw new Error("rawText must be non-empty");
-  }
-
-  const userPrompt = buildOpenAIClassificationPrompt(trimmed);
-  console.log("[ai] classifyNeedWithOpenAI: provider used: openai");
-
-  let rawTextOut: string;
   try {
-    const completion = await openaiClient.chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.2,
-      max_tokens: 256,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-    rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
+    const a = await analyzeIntakeNeed(rawText);
+    return {
+      need_type: a.need_type,
+      urgency: a.urgency,
+      confidence: a.confidence,
+      source: a.source,
+    };
   } catch (err) {
-    logError("[ai] classifyNeedWithOpenAI (chat.completions.create)", err);
-    throw err;
-  }
-
-  console.log("[ai] classifyNeedWithOpenAI: raw model response:", rawTextOut);
-
-  try {
-    const out = parseClassificationFromModelOutput(
-      rawTextOut,
-      "openai",
-      "OpenAI classify"
-    );
-    console.log("[ai] classifyNeedWithOpenAI: parsed result:", out);
-    return out;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logError("[ai] classifyNeedWithOpenAI (parse)", err);
-    console.error("[ai] classifyNeedWithOpenAI: caught error message:", msg);
-    const fallback = classificationFallback("openai");
-    console.log("[ai] classifyNeedWithOpenAI: using fallback:", fallback);
-    return fallback;
+    logError("[ai] classifyNeedWithOpenAI", err);
+    return classificationFallback("openai");
   }
 }
 

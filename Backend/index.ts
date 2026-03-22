@@ -14,13 +14,17 @@ import resourcesRouter from "./routes/resources";
 import matchesRouter from "./routes/matches";
 import aiRouter from "./routes/ai";
 import intakeRouter from "./routes/intake";
+import myResourcesRouter from "./routes/myResources";
+import reservationsRouter from "./routes/reservations";
+import mySeekerRouter from "./routes/mySeeker";
 
 const app = express();
 
 const parsedPort = process.env.PORT ? Number(process.env.PORT) : NaN;
 const listenPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 0;
 
-app.use(cors());
+// Browser clients (local Frontend on any port, etc.): reflect Origin; preflight handled by cors
+app.use(cors({ origin: true }));
 app.use(express.json());
 
 app.get("/test-env", (_req, res) => {
@@ -42,6 +46,9 @@ app.get("/", (_req, res) => {
       ai: "/api/ai",
       aiPing: "/api/ai/ping",
       intake: "/api/intake",
+      myResources: "/api/my/resources",
+      reservations: "/api/reservations",
+      myReservations: "/api/my/reservations",
     },
   });
 });
@@ -56,6 +63,9 @@ app.use("/api/matches", matchesRouter);
 
 app.use("/api/ai", aiRouter);
 app.use("/api/intake", intakeRouter);
+app.use("/api/my/resources", myResourcesRouter);
+app.use("/api/reservations", reservationsRouter);
+app.use("/api/my", mySeekerRouter);
 
 const server = app.listen(listenPort, () => {
   const addr = server.address();

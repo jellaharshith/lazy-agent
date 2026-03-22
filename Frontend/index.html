@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Intent Commons — Intake demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <h1>Need intake</h1>
+        <p class="lede">
+          Describe a need in plain language. The backend classifies it and looks for a nearby
+          resource match.
+        </p>
+      </header>
+
+      <form id="intake-form" class="card">
+        <label class="label" for="raw-text">What do you need?</label>
+        <textarea
+          id="raw-text"
+          name="raw_text"
+          rows="5"
+          placeholder="e.g. We need 20 blankets for families tonight."
+          required
+        ></textarea>
+        <p class="hint">Location is fixed for this demo: 37.6688, -122.0808</p>
+        <button type="submit" id="submit-btn" class="btn primary">Submit</button>
+      </form>
+
+      <div id="status" class="status" hidden aria-live="polite"></div>
+
+      <section id="results" class="results" hidden>
+        <h2>Response</h2>
+
+        <article class="card block">
+          <h3>Message</h3>
+          <p id="out-message" class="body-text"></p>
+        </article>
+
+        <article class="card block">
+          <h3>Summary</h3>
+          <p id="out-summary" class="body-text"></p>
+        </article>
+
+        <article class="card block">
+          <h3>Classification</h3>
+          <dl id="out-classification" class="kv"></dl>
+        </article>
+
+        <article class="card block">
+          <h3>Best match</h3>
+          <div id="out-best-match"></div>
+        </article>
+      </section>
+    </main>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

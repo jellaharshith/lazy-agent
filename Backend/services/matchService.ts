@@ -4,6 +4,14 @@ import { Match, Need, Resource } from '../types';
 
 const EARTH_RADIUS_KM = 6371;
 
+const MAX_TYPE_TIER = 3;
+
+/** Max random bump mixed into rank (keeps ordering from flipping wildly). */
+const RANK_JITTER_MAX = 0.07;
+/** Candidates within this score of the top are treated as “close” for diversity. */
+const RANK_CLOSE_EPS = 18;
+const RANK_POOL_MAX = 3;
+
 function toRadians(deg: number): number {
   return (deg * Math.PI) / 180;
 }
@@ -17,14 +25,14 @@ function urgencyWeight(urgency: string): number {
 }
 
 /** Higher when closer to the need (inverse distance: near → ~1, far → ~0). */
-function inverseDistanceScore(distanceKm: number): number {
+export function inverseDistanceScore(distanceKm: number): number {
   if (!Number.isFinite(distanceKm)) return 0;
   if (distanceKm <= 1) return 1;
   if (distanceKm >= 30) return 0;
   return 1 - (distanceKm - 1) / 29;
 }
 
-function expiryPriority(expiresAt: string | null): number {
+export function expiryPriority(expiresAt: string | null): number {
   if (!expiresAt) return 0.6;
   const ms = new Date(expiresAt).getTime() - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return 0;
@@ -57,14 +65,111 @@ export function scoreResource(urgency: string, distanceKm: number, expiresAt: st
   return Number(s.toFixed(4));
 }
 
-/** Picks the resource with highest score (distance computed per resource). */
+/**
+ * 0 = food bank, 1 = community kitchen, 2 = restaurant/bakery, 3 = supermarket/grocery.
+ */
+export function resourceTypeTier(r: Resource): number {
+  const hay = `${r.title} ${r.resource_type}`.toLowerCase();
+  if (hay.includes('food bank') || hay.includes('pantry')) return 0;
+  if (hay.includes('community kitchen') || hay.includes('soup kitchen')) return 1;
+  if (hay.includes('supermarket') || hay.includes('grocery')) return 3;
+  if (
+    hay.includes('restaurant') ||
+    hay.includes('bakery') ||
+    hay.includes('cafe') ||
+    hay.includes('taqueria') ||
+    hay.includes('deli')
+  ) {
+    return 2;
+  }
+  return 2;
+}
+
+/** UI / API label for a Supabase resource row. */
+export function resourceMatchKind(
+  r: Resource
+): 'food_bank' | 'community_kitchen' | 'restaurant' | 'supermarket' {
+  const hay = `${r.title} ${r.resource_type}`.toLowerCase();
+  if (hay.includes('food bank') || hay.includes('pantry')) return 'food_bank';
+  if (hay.includes('community kitchen') || hay.includes('soup kitchen')) return 'community_kitchen';
+  if (hay.includes('supermarket') || hay.includes('grocery')) return 'supermarket';
+  return 'restaurant';
+}
+
+/**
+ * Higher = better. Type tier (food_bank … supermarket), distance, expiry, urgency, jitter.
+ */
+export function computeCandidateRankScore(opts: {
+  typeTier: number;
+  distanceKm: number;
+  expiresAt: string | null;
+  isPlace: boolean;
+  urgency?: string;
+}): number {
+  const tier = Math.min(MAX_TYPE_TIER, Math.max(0, opts.typeTier));
+  const typeScore = (MAX_TYPE_TIER - tier) * 100;
+  const distScore = inverseDistanceScore(opts.distanceKm) * 75;
+  const exp = opts.isPlace ? 0.55 : expiryPriority(opts.expiresAt);
+  const expiryScore = exp * 30;
+  const urgScore = opts.urgency ? urgencyWeight(opts.urgency) * 35 : 0;
+  const jitter = Math.random() * RANK_JITTER_MAX;
+  return typeScore + distScore + expiryScore + urgScore + jitter;
+}
+
+/** Extra rank weight from cuisine / price preferences (intake). */
+export type IntakePreferenceContext = {
+  preferenceText: string | null;
+  freeFoodPreferred: boolean;
+  cheapFoodPreferred: boolean;
+};
+
+export function preferenceRankBonus(
+  ctx: IntakePreferenceContext,
+  opts: {
+    title: string;
+    subtitle?: string;
+    discountedPrice?: number | null;
+    originalPrice?: number | null;
+  }
+): number {
+  let b = 0;
+  const hay = `${opts.title} ${opts.subtitle ?? ""}`.toLowerCase();
+  const pref = (ctx.preferenceText ?? "").toLowerCase().trim();
+  if (pref.length > 1) {
+    for (const token of pref.split(/[^a-z0-9]+/)) {
+      if (token.length > 2 && hay.includes(token)) b += 15;
+    }
+  }
+  const disc = opts.discountedPrice;
+  if (ctx.freeFoodPreferred && disc != null && Number.isFinite(disc) && disc <= 0) b += 25;
+  if (ctx.cheapFoodPreferred && disc != null && Number.isFinite(disc) && disc > 0 && disc <= 5) b += 18;
+  return b;
+}
+
+export function pickFromRankedPool<T>(
+  scored: Array<{ item: T; rank: number }>
+): { item: T; rank: number } | null {
+  if (scored.length === 0) return null;
+  const sorted = [...scored].sort((a, b) => b.rank - a.rank);
+  const topScore = sorted[0].rank;
+  const pool = sorted
+    .filter((s) => s.rank >= topScore - RANK_CLOSE_EPS)
+    .slice(0, RANK_POOL_MAX);
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  return pick;
+}
+
+/** Picks a resource with diversity among top close matches (not always the same row). */
 export function findBestResourceForNeed(
   need: Need,
   resources: Resource[]
 ): { resource: Resource; score: number; distanceKm: number } | null {
   if (need.lat == null || need.lng == null) return null;
 
-  let best: { resource: Resource; score: number; distanceKm: number } | null = null;
+  const scored: Array<{
+    item: { resource: Resource; distanceKm: number };
+    rank: number;
+  }> = [];
 
   for (const r of resources) {
     if (r.lat == null || r.lng == null) continue;
@@ -72,14 +177,25 @@ export function findBestResourceForNeed(
     if (r.quantity != null && r.quantity <= 0) continue;
 
     const distanceKm = calculateDistanceKm(need.lat, need.lng, r.lat, r.lng);
-    const score = scoreResource(need.urgency, distanceKm, r.expires_at);
-
-    if (!best || score > best.score) {
-      best = { resource: r, score, distanceKm };
-    }
+    const rank = computeCandidateRankScore({
+      typeTier: resourceTypeTier(r),
+      distanceKm,
+      expiresAt: r.expires_at,
+      isPlace: false,
+      urgency: need.urgency,
+    });
+    scored.push({ item: { resource: r, distanceKm }, rank });
   }
 
-  return best;
+  const picked = pickFromRankedPool(scored);
+  if (!picked) return null;
+
+  const { resource, distanceKm } = picked.item;
+  return {
+    resource,
+    distanceKm,
+    score: scoreResource(need.urgency, distanceKm, resource.expires_at),
+  };
 }
 
 /** Fetches available rows from DB, scores by distance + urgency + expiry, inserts a suggested match. */

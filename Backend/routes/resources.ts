@@ -1,5 +1,7 @@
-import { Router, Request, Response } from 'express';
-import { createNewResource, listAvailableResources } from '../services/resourceService';
+import { Router, Request, Response } from "express";
+import { createNewResource, listAvailableResources } from "../services/resourceService";
+import { requireAuth } from "../middleware/auth";
+import { requireRole } from "../middleware/requireRole";
 
 const router = Router();
 
@@ -11,7 +13,7 @@ function parseOptionalNumber(value: unknown): number | null {
 
 const AVAILABLE_STATUS_FILTER = 'available' as const;
 
-router.get('/available', async (_req: Request, res: Response) => {
+router.get("/available", async (_req: Request, res: Response) => {
   try {
     const resources = await listAvailableResources();
     console.log('[GET /api/resources/available] status filter used: resources.status =', JSON.stringify(AVAILABLE_STATUS_FILTER));
@@ -24,12 +26,14 @@ router.get('/available', async (_req: Request, res: Response) => {
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
+router.post("/", requireAuth, requireRole(["provider"]), async (req: Request, res: Response) => {
   try {
-    const { title, resource_type, quantity, expires_at, lat, lng } = req.body ?? {};
+    const { title, resource_type, category, quantity, expires_at, lat, lng, original_price, discounted_price } =
+      req.body ?? {};
+    const providerId = req.user?.id ?? null;
 
-    if (typeof title !== 'string' || !title.trim()) {
-      return res.status(400).json({ error: 'title is required' });
+    if (typeof title !== "string" || !title.trim()) {
+      return res.status(400).json({ error: "title is required" });
     }
 
     let quantityVal: number | null = null;
@@ -51,11 +55,16 @@ router.post('/', async (req: Request, res: Response) => {
 
     const resource = await createNewResource({
       title: title.trim(),
-      resource_type: typeof resource_type === 'string' && resource_type.trim() ? resource_type.trim() : undefined,
+      resource_type:
+        typeof resource_type === "string" && resource_type.trim() ? resource_type.trim() : undefined,
+      category: typeof category === "string" && category.trim() ? category.trim() : null,
       quantity: quantityVal,
       expires_at: expiresAtVal,
       lat: parseOptionalNumber(lat),
       lng: parseOptionalNumber(lng),
+      original_price: parseOptionalNumber(original_price),
+      discounted_price: parseOptionalNumber(discounted_price),
+      provider_id: providerId,
     });
 
     return res.status(201).json(resource);

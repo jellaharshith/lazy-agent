@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "dev:backend": "ts-node --transpile-only Backend/index.ts"
+    "dev:backend": "ts-node --transpile-only Backend/index.ts",
+    "seed:public": "ts-node --transpile-only Backend/scripts/seedPublicData.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

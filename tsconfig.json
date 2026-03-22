@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["Backend/**/*.ts"]
+  "include": ["Backend/**/*.ts", "Backend/types/**/*.d.ts"]
 }

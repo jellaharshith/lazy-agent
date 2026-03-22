@@ -35,3 +35,16 @@ export async function getMatchByNeedId(needId: string): Promise<Match[]> {
   if (error) throw dbError('getMatchByNeedId', error);
   return (data ?? []) as Match[];
 }
+
+export async function getMatchesByNeedIds(needIds: string[]): Promise<Match[]> {
+  if (needIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('matches')
+    .select('*')
+    .in('need_id', needIds)
+    .order('created_at', { ascending: false });
+
+  if (error) throw dbError('getMatchesByNeedIds', error);
+  return (data ?? []) as Match[];
+}
