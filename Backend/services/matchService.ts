@@ -116,12 +116,62 @@ export function computeCandidateRankScore(opts: {
   return typeScore + distScore + expiryScore + urgScore + jitter;
 }
 
+/** Deterministic boosts from AI ranking hints (intake). */
+export type RankingHintsContext = {
+  prioritize_distance: boolean;
+  prioritize_low_price: boolean;
+  prioritize_soon_expiring: boolean;
+  prioritize_free_food: boolean;
+};
+
 /** Extra rank weight from cuisine / price preferences (intake). */
 export type IntakePreferenceContext = {
   preferenceText: string | null;
   freeFoodPreferred: boolean;
   cheapFoodPreferred: boolean;
+  rankingHints?: RankingHintsContext | null;
+  nearbyRequired?: boolean;
+  cuisinePreference?: string | null;
 };
+
+export function aiRankingHintBonus(opts: {
+  hints: RankingHintsContext | null | undefined;
+  nearbyRequired: boolean;
+  distanceKm: number;
+  expiresAt: string | null;
+  isPlace: boolean;
+  matchKind: string;
+  discountedPrice?: number | null;
+  originalPrice?: number | null;
+}): number {
+  let b = 0;
+  const h = opts.hints;
+  if (h?.prioritize_distance) {
+    b += inverseDistanceScore(opts.distanceKm) * 22;
+  }
+  if (opts.nearbyRequired) {
+    if (opts.distanceKm > 3) b -= (opts.distanceKm - 3) * 8;
+    if (opts.distanceKm < 2) b += 12;
+  }
+  if (h?.prioritize_low_price) {
+    const d = opts.discountedPrice;
+    if (d != null && Number.isFinite(d)) {
+      if (d <= 0) b += 28;
+      else if (d <= 3) b += 20;
+      else if (d <= 8) b += 10;
+    }
+  }
+  if (h?.prioritize_soon_expiring && !opts.isPlace) {
+    b += expiryPriority(opts.expiresAt) * 18;
+  }
+  if (h?.prioritize_free_food) {
+    const k = opts.matchKind.toLowerCase();
+    if (k.includes("food_bank") || k.includes("community")) b += 22;
+    const d = opts.discountedPrice;
+    if (d != null && Number.isFinite(d) && d <= 0) b += 18;
+  }
+  return b;
+}
 
 export function preferenceRankBonus(
   ctx: IntakePreferenceContext,
@@ -134,7 +184,10 @@ export function preferenceRankBonus(
 ): number {
   let b = 0;
   const hay = `${opts.title} ${opts.subtitle ?? ""}`.toLowerCase();
-  const pref = (ctx.preferenceText ?? "").toLowerCase().trim();
+  const pref = [ctx.preferenceText ?? "", ctx.cuisinePreference ?? ""]
+    .join(" ")
+    .toLowerCase()
+    .trim();
   if (pref.length > 1) {
     for (const token of pref.split(/[^a-z0-9]+/)) {
       if (token.length > 2 && hay.includes(token)) b += 15;

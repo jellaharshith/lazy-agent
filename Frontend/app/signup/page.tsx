@@ -8,12 +8,17 @@ import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import type { UserRole } from "@/types/auth";
 import { PageShell, SectionCard, ui } from "@/components/ui/app-ui";
 
+function looksLikeE164(s: string): boolean {
+  return /^\+[1-9]\d{6,14}$/.test(s.trim());
+}
+
 export default function SignUpPage() {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("seeker");
+  const [optionalPhone, setOptionalPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -24,6 +29,11 @@ export default function SignUpPage() {
     setInfo(null);
     if (!isSupabaseConfigured()) {
       setError("Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return;
+    }
+    const phoneTrim = optionalPhone.trim();
+    if (phoneTrim && !looksLikeE164(phoneTrim)) {
+      setError("Phone must be in E.164 format with country code, e.g. +15551234567.");
       return;
     }
     setSubmitting(true);
@@ -51,14 +61,17 @@ export default function SignUpPage() {
       }
 
       if (data.session) {
-        const { error: profileError } = await getSupabase().from("profiles").upsert(
-          {
-            id: u.id,
-            full_name: fullName.trim() || null,
-            role,
-          },
-          { onConflict: "id" }
-        );
+        const profileRow: { id: string; full_name: string | null; role: UserRole; phone_number?: string } = {
+          id: u.id,
+          full_name: fullName.trim() || null,
+          role,
+        };
+        if (phoneTrim) {
+          profileRow.phone_number = phoneTrim;
+        }
+        const { error: profileError } = await getSupabase().from("profiles").upsert(profileRow, {
+          onConflict: "id",
+        });
 
         if (profileError) {
           setError(profileError.message);
@@ -149,6 +162,21 @@ export default function SignUpPage() {
                 </label>
               </div>
             </fieldset>
+            <label className={ui.fieldLabel}>
+              Phone <span className="font-normal text-slate-500">(optional)</span>
+              <input
+                type="tel"
+                autoComplete="tel"
+                value={optionalPhone}
+                onChange={(e) => setOptionalPhone(e.target.value)}
+                className={ui.input}
+                placeholder="+15551234567"
+              />
+              <span className="mt-1 block text-xs font-normal leading-relaxed text-slate-500">
+                E.164 with country code. Seekers: prefill for reservation confirmation calls. Providers: voice
+                alerts when someone reserves your listing (also editable on the dashboard).
+              </span>
+            </label>
             {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
             {info && <p className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900">{info}</p>}
             <button type="submit" disabled={submitting} className={ui.primaryButton + " w-full justify-center"}>

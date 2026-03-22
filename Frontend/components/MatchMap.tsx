@@ -9,11 +9,11 @@ declare global {
   }
 }
 
-const containerStyle = {
+const mapFillStyle = {
   width: "100%",
-  height: "320px",
+  height: "100%",
   borderRadius: "0.75rem",
-};
+} as const;
 
 export type LatLng = { lat: number; lng: number };
 
@@ -93,9 +93,14 @@ export default function MatchMap({
     [userLocation, matchLocation]
   );
 
+  const mapFrameClass =
+    "relative w-full min-h-[180px] h-[200px] sm:min-h-[220px] sm:h-[240px] md:h-[280px] lg:h-[320px] xl:h-[360px]";
+
   if (!apiKey.trim()) {
     return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 text-center text-sm text-amber-900">
+      <div
+        className={`flex items-center justify-center rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 text-center text-sm text-amber-900 ${mapFrameClass}`}
+      >
         Add <code className="rounded bg-amber-100 px-1">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code>{" "}
         to your env to load the map.
       </div>
@@ -104,7 +109,9 @@ export default function MatchMap({
 
   if (loadError) {
     return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-4 text-center text-sm text-red-800">
+      <div
+        className={`flex items-center justify-center rounded-xl border border-red-200 bg-red-50 px-4 text-center text-sm text-red-800 ${mapFrameClass}`}
+      >
         Could not load Google Maps. Check the API key and billing.
       </div>
     );
@@ -112,7 +119,7 @@ export default function MatchMap({
 
   if (authFailed) {
     return (
-      <div className="flex h-[320px] flex-col justify-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 text-sm text-amber-950">
+      <div className="flex max-h-[min(72vh,480px)] min-h-[200px] flex-col justify-center gap-3 overflow-y-auto rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950 sm:px-5">
         <p className="font-semibold">Google Maps blocked this page (API key / Cloud setup).</p>
         <ul className="list-disc space-y-1 pl-5 text-amber-900/90">
           <li>
@@ -151,16 +158,20 @@ export default function MatchMap({
 
   if (!isLoaded) {
     return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-600">
+      <div
+        className={`flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-600 ${mapFrameClass}`}
+      >
         Loading map…
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100 shadow-sm">
+    <div
+      className={`overflow-hidden rounded-xl border border-slate-200 bg-slate-100 shadow-sm ${mapFrameClass}`}
+    >
       <GoogleMap
-        mapContainerStyle={containerStyle}
+        mapContainerStyle={mapFillStyle}
         center={fallbackCenter}
         zoom={13}
         onLoad={onMapLoad}

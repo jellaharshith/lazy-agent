@@ -96,7 +96,10 @@ export interface CreateNotificationInput {
   voice_url?: string | null;
 }
 
-/** Row shape for `reservations` */
+/**
+ * Row shape for `reservations`.
+ * Typical `status` values: `reserved`, `provider_notified`, `confirmed`, `picked_up` (extend in DB as needed).
+ */
 export interface Reservation {
   id: string;
   user_id: string | null;

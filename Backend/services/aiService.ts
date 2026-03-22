@@ -2,10 +2,12 @@ import { inspect } from "util";
 import type { GenerateContentResult } from "@google/generative-ai";
 import { geminiModel } from "../config/gemini";
 import { client as openaiClient } from "../config/openai";
+import type { HfClassificationResult } from "./hfService";
+import { classifyWithHF } from "./hfService";
 
 export type NeedType = "food" | "financial" | "emotional" | "none";
 export type UrgencyLevel = "low" | "medium" | "high";
-export type ClassificationSource = "gemini" | "openai";
+export type ClassificationSource = "gemini" | "openai" | "fallback";
 
 export interface NeedClassification {
   need_type: NeedType;
@@ -17,13 +19,22 @@ export interface ClassifiedNeed extends NeedClassification {
   source: ClassificationSource;
 }
 
-/** Rich intake analysis (orchestration layer — no external APIs besides OpenAI). */
+/** Rich intake analysis — OpenAI primary, Hugging Face optional helper. */
 export interface SearchIntent {
   keywords: string[];
   priority_types: string[];
   user_preference: string | null;
+  cuisine_preference: string | null;
   free_food_preferred: boolean;
   cheap_food_preferred: boolean;
+  nearby_required: boolean;
+}
+
+export interface RankingHints {
+  prioritize_distance: boolean;
+  prioritize_low_price: boolean;
+  prioritize_soon_expiring: boolean;
+  prioritize_free_food: boolean;
 }
 
 export interface IntakeUiContent {
@@ -38,14 +49,35 @@ export interface IntakeStorageTags {
   preference_text: string | null;
 }
 
+/** Candidate snapshot passed into OpenAI (not authoritative for ranking). */
+export interface NearbyCandidateForAi {
+  title: string;
+  type: string;
+  distanceKm?: number;
+  discountedPrice?: number | null;
+  originalPrice?: number | null;
+  expiresAt?: string | null;
+  source?: string;
+}
+
+export interface AnalyzeNeedInput {
+  rawText: string;
+  lat?: number;
+  lng?: number;
+  nearbyCandidates?: NearbyCandidateForAi[];
+}
+
 export interface IntakeAiAnalysis {
   need_type: NeedType;
   urgency: UrgencyLevel;
   confidence: number;
   source: ClassificationSource;
+  hf_labels: HfClassificationResult | null;
   search_intent: SearchIntent;
+  ranking_hints: RankingHints;
   ui_content: IntakeUiContent;
   storage_tags: IntakeStorageTags;
+  reasoning_summary: string;
 }
 
 const NEED_TYPES: readonly NeedType[] = ["food", "financial", "emotional", "none"];
@@ -194,9 +226,43 @@ function defaultSearchIntent(): SearchIntent {
     keywords: ["food bank", "community kitchen", "restaurant", "supermarket"],
     priority_types: ["food_bank", "community_kitchen", "restaurant", "supermarket"],
     user_preference: null,
+    cuisine_preference: null,
     free_food_preferred: false,
     cheap_food_preferred: false,
+    nearby_required: false,
   };
+}
+
+function defaultRankingHints(): RankingHints {
+  return {
+    prioritize_distance: false,
+    prioritize_low_price: false,
+    prioritize_soon_expiring: false,
+    prioritize_free_food: false,
+  };
+}
+
+function hfTopToNeedType(top: string): NeedType {
+  const t = top.toLowerCase().trim();
+  if (t === "food" || t === "financial" || t === "emotional" || t === "none") return t;
+  return "none";
+}
+
+function logHfOpenAiDisagreement(
+  hf: HfClassificationResult | null,
+  openaiNeed: NeedType
+): void {
+  if (!hf) return;
+  const hfType = hfTopToNeedType(hf.top_label);
+  const topScore = Math.max(...Object.values(hf.scores));
+  if (topScore >= 0.65 && hfType !== openaiNeed) {
+    console.warn("[ai] HF disagrees with OpenAI need_type:", {
+      hf_top: hf.top_label,
+      hf_type: hfType,
+      openai: openaiNeed,
+      hf_confidence: topScore.toFixed(3),
+    });
+  }
 }
 
 function defaultUiContent(needType: string): IntakeUiContent {
@@ -224,21 +290,100 @@ function defaultStorageTags(): IntakeStorageTags {
 
 function intakeAnalysisFromBasic(
   n: NeedClassification,
-  source: ClassificationSource
+  source: ClassificationSource,
+  hfLabels: HfClassificationResult | null
 ): IntakeAiAnalysis {
   return {
     need_type: n.need_type,
     urgency: n.urgency,
     confidence: n.confidence,
     source,
+    hf_labels: hfLabels,
     search_intent: defaultSearchIntent(),
+    ranking_hints: defaultRankingHints(),
     ui_content: defaultUiContent(n.need_type),
     storage_tags: defaultStorageTags(),
+    reasoning_summary: "Reduced analysis from primary classifier (rich JSON parse failed).",
   };
 }
 
-function buildOpenAIRichIntakePrompt(rawText: string): string {
-  return `You are an assistant for a surplus food marketplace. Analyze the user's message and return ONLY valid JSON with this shape (no markdown):
+function intakeAnalysisFromHfHelper(hf: HfClassificationResult): IntakeAiAnalysis {
+  const needType = hfTopToNeedType(hf.top_label);
+  const tl = hf.top_label.toLowerCase().trim();
+  const key =
+    tl === "food" || tl === "financial" || tl === "emotional" || tl === "none" ? tl : null;
+  const rawScore =
+    key != null ? hf.scores[key] : Math.max(...Object.values(hf.scores));
+  const confidence = typeof rawScore === "number" && Number.isFinite(rawScore) ? rawScore : 0.55;
+  return {
+    need_type: needType,
+    urgency: needType === "food" ? "medium" : "low",
+    confidence: Math.max(0.35, Math.min(0.92, confidence)),
+    source: "fallback",
+    hf_labels: hf,
+    search_intent: defaultSearchIntent(),
+    ranking_hints: defaultRankingHints(),
+    ui_content: defaultUiContent(needType),
+    storage_tags: defaultStorageTags(),
+    reasoning_summary: "Auxiliary model classification (OpenAI unavailable).",
+  };
+}
+
+function fullFallbackAnalysis(hfLabels: HfClassificationResult | null): IntakeAiAnalysis {
+  return {
+    need_type: "none",
+    urgency: "low",
+    confidence: 0.5,
+    source: "fallback",
+    hf_labels: hfLabels,
+    search_intent: defaultSearchIntent(),
+    ranking_hints: defaultRankingHints(),
+    ui_content: defaultUiContent("none"),
+    storage_tags: defaultStorageTags(),
+    reasoning_summary: "Safe fallback — models unavailable or unparseable.",
+  };
+}
+
+function buildAnalyzeNeedUserPrompt(input: AnalyzeNeedInput): string {
+  const trimmed = input.rawText.trim();
+  const ctxLines: string[] = [];
+  if (
+    input.lat != null &&
+    input.lng != null &&
+    Number.isFinite(input.lat) &&
+    Number.isFinite(input.lng)
+  ) {
+    ctxLines.push(`User location (lat, lng): ${input.lat}, ${input.lng}.`);
+  }
+  const cands = input.nearbyCandidates ?? [];
+  if (cands.length > 0) {
+    ctxLines.push("Nearby options (hints only — server ranks for real):");
+    const cap = Math.min(cands.length, 15);
+    for (let i = 0; i < cap; i++) {
+      const c = cands[i]!;
+      const parts = [
+        `"${c.title}"`,
+        `type=${c.type}`,
+        c.distanceKm != null && Number.isFinite(c.distanceKm)
+          ? `dist_km≈${Number(c.distanceKm).toFixed(1)}`
+          : null,
+        c.discountedPrice != null && Number.isFinite(Number(c.discountedPrice))
+          ? `discounted_price=${c.discountedPrice}`
+          : null,
+        c.originalPrice != null && Number.isFinite(Number(c.originalPrice))
+          ? `original_price=${c.originalPrice}`
+          : null,
+        c.expiresAt ? `expires=${c.expiresAt}` : null,
+        c.source ? `source=${c.source}` : null,
+      ].filter(Boolean);
+      ctxLines.push(`- ${parts.join(", ")}`);
+    }
+  }
+
+  const contextBlock =
+    ctxLines.length > 0 ? `Context:\n${ctxLines.join("\n")}\n\n` : "";
+
+  return `${contextBlock}Surplus-food marketplace assistant. Reply with ONLY JSON (no markdown):
 {
   "need_type": "food | financial | emotional | none",
   "urgency": "low | medium | high",
@@ -247,35 +392,43 @@ function buildOpenAIRichIntakePrompt(rawText: string): string {
     "keywords": string[],
     "priority_types": string[],
     "user_preference": string | null,
+    "cuisine_preference": string | null,
     "free_food_preferred": boolean,
-    "cheap_food_preferred": boolean
+    "cheap_food_preferred": boolean,
+    "nearby_required": boolean
   },
-  "ui_content": {
-    "message": string,
-    "summary": string
+  "ranking_hints": {
+    "prioritize_distance": boolean,
+    "prioritize_low_price": boolean,
+    "prioritize_soon_expiring": boolean,
+    "prioritize_free_food": boolean
   },
+  "ui_content": { "message": string, "summary": string },
   "storage_tags": {
     "category": string | null,
     "priority_score": number | null,
     "request_label": string | null,
     "preference_text": string | null
-  }
+  },
+  "reasoning_summary": string
 }
-Rules:
-- priority_types should be a subset of: food_bank, community_kitchen, restaurant, fast_food, supermarket, grocery_store.
-- keywords should help find nearby places (short phrases).
-- If the user mentions cuisine (e.g. Indian), put it in storage_tags.preference_text and search_intent.user_preference.
-- ui_content should be short, friendly, demo-ready.
+priority_types ⊆ food_bank, community_kitchen, restaurant, fast_food, supermarket, grocery_store.
+Set ranking_hints true when the user clearly cares (urgent/nearby → distance; cheap → low_price; free/pantry → free_food; expiring deals → soon_expiring).
+Keep ui_content short. One-sentence reasoning_summary.
 
 User message:
-${rawText}`;
+${trimmed}`;
 }
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
-function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource): IntakeAiAnalysis | null {
+function normalizeIntakeAnalysis(
+  parsed: unknown,
+  source: ClassificationSource,
+  hfLabels: HfClassificationResult | null
+): IntakeAiAnalysis | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const o = parsed as Record<string, unknown>;
   const { need_type, urgency, confidence } = o;
@@ -288,24 +441,54 @@ function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource):
         : NaN;
   if (!Number.isFinite(c) || c < 0 || c > 1) return null;
 
-  const si = o.search_intent && typeof o.search_intent === "object" && !Array.isArray(o.search_intent)
-    ? (o.search_intent as Record<string, unknown>)
-    : null;
-  const keywords = si && isStringArray(si.keywords) ? si.keywords : defaultSearchIntent().keywords;
+  const defSi = defaultSearchIntent();
+  const si =
+    o.search_intent && typeof o.search_intent === "object" && !Array.isArray(o.search_intent)
+      ? (o.search_intent as Record<string, unknown>)
+      : null;
+  const keywords = si && isStringArray(si.keywords) ? si.keywords : defSi.keywords;
   const priorityTypes =
-    si && isStringArray(si.priority_types) ? si.priority_types : defaultSearchIntent().priority_types;
+    si && isStringArray(si.priority_types) ? si.priority_types : defSi.priority_types;
   const userPref =
     si && typeof si.user_preference === "string"
       ? si.user_preference
       : si && si.user_preference === null
         ? null
         : null;
+  const cuisinePref =
+    si && typeof si.cuisine_preference === "string"
+      ? si.cuisine_preference.trim() || null
+      : si && si.cuisine_preference === null
+        ? null
+        : null;
   const freePref = si && typeof si.free_food_preferred === "boolean" ? si.free_food_preferred : false;
   const cheapPref = si && typeof si.cheap_food_preferred === "boolean" ? si.cheap_food_preferred : false;
+  const nearbyReq = si && typeof si.nearby_required === "boolean" ? si.nearby_required : false;
 
-  const ui = o.ui_content && typeof o.ui_content === "object" && !Array.isArray(o.ui_content)
-    ? (o.ui_content as Record<string, unknown>)
-    : null;
+  const rh =
+    o.ranking_hints && typeof o.ranking_hints === "object" && !Array.isArray(o.ranking_hints)
+      ? (o.ranking_hints as Record<string, unknown>)
+      : null;
+  const defRh = defaultRankingHints();
+  const ranking_hints: RankingHints = {
+    prioritize_distance:
+      rh && typeof rh.prioritize_distance === "boolean" ? rh.prioritize_distance : defRh.prioritize_distance,
+    prioritize_low_price:
+      rh && typeof rh.prioritize_low_price === "boolean" ? rh.prioritize_low_price : defRh.prioritize_low_price,
+    prioritize_soon_expiring:
+      rh && typeof rh.prioritize_soon_expiring === "boolean"
+        ? rh.prioritize_soon_expiring
+        : defRh.prioritize_soon_expiring,
+    prioritize_free_food:
+      rh && typeof rh.prioritize_free_food === "boolean"
+        ? rh.prioritize_free_food
+        : defRh.prioritize_free_food,
+  };
+
+  const ui =
+    o.ui_content && typeof o.ui_content === "object" && !Array.isArray(o.ui_content)
+      ? (o.ui_content as Record<string, unknown>)
+      : null;
   const msg =
     ui && typeof ui.message === "string" && ui.message.trim()
       ? ui.message.trim()
@@ -315,9 +498,10 @@ function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource):
       ? ui.summary.trim()
       : defaultUiContent(need_type).summary;
 
-  const st = o.storage_tags && typeof o.storage_tags === "object" && !Array.isArray(o.storage_tags)
-    ? (o.storage_tags as Record<string, unknown>)
-    : null;
+  const st =
+    o.storage_tags && typeof o.storage_tags === "object" && !Array.isArray(o.storage_tags)
+      ? (o.storage_tags as Record<string, unknown>)
+      : null;
   const category =
     st == null
       ? null
@@ -349,18 +533,27 @@ function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource):
           ? null
           : null;
 
+  const reasoning_summary =
+    typeof o.reasoning_summary === "string" && o.reasoning_summary.trim()
+      ? o.reasoning_summary.trim()
+      : "Intent parsed from user message.";
+
   return {
     need_type,
     urgency,
     confidence: c,
     source,
+    hf_labels: hfLabels,
     search_intent: {
       keywords,
       priority_types: priorityTypes,
       user_preference: userPref,
+      cuisine_preference: cuisinePref,
       free_food_preferred: freePref,
       cheap_food_preferred: cheapPref,
+      nearby_required: nearbyReq,
     },
+    ranking_hints,
     ui_content: { message: msg, summary: sum },
     storage_tags: {
       category,
@@ -368,6 +561,7 @@ function normalizeIntakeAnalysis(parsed: unknown, source: ClassificationSource):
       request_label: requestLabel,
       preference_text: prefText,
     },
+    reasoning_summary,
   };
 }
 
@@ -390,57 +584,98 @@ async function fetchBasicOpenAIClassification(rawText: string): Promise<NeedClas
 }
 
 /**
- * Full AI intake analysis: intent, preferences, UI copy, and DB tags.
- * Does not call Google or DB — only OpenAI.
+ * Full hybrid analysis: Hugging Face (optional) + OpenAI (primary), merged safely.
  */
-export async function analyzeIntakeNeed(rawText: string): Promise<IntakeAiAnalysis> {
-  const trimmed = rawText.trim();
+function logAiOutcome(
+  path: "rich" | "basic" | "hf" | "fallback",
+  input: AnalyzeNeedInput,
+  result: IntakeAiAnalysis
+): void {
+  const n = input.nearbyCandidates?.length ?? 0;
+  console.log("[ai]", path, {
+    candidates: n,
+    need_type: result.need_type,
+    source: result.source,
+    hf: result.hf_labels?.top_label ?? null,
+  });
+}
+
+export async function analyzeNeedWithContext(input: AnalyzeNeedInput): Promise<IntakeAiAnalysis> {
+  const trimmed = input.rawText.trim();
   if (!trimmed) {
     throw new Error("rawText must be non-empty");
   }
 
-  const userPrompt = buildOpenAIRichIntakePrompt(trimmed);
-  console.log("[ai] analyzeIntakeNeed: provider used: openai");
+  const userPrompt = buildAnalyzeNeedUserPrompt(input);
 
-  let rawTextOut: string;
-  try {
-    const completion = await openaiClient.chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.2,
-      max_tokens: 1024,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-    rawTextOut = completion.choices[0]?.message?.content?.trim() ?? "";
-  } catch (err) {
-    logError("[ai] analyzeIntakeNeed (chat.completions.create)", err);
-    throw err;
-  }
+  const [hfLabels, richRaw] = await Promise.all([
+    classifyWithHF(trimmed),
+    (async (): Promise<string> => {
+      try {
+        const completion = await openaiClient.chat.completions.create({
+          model: OPENAI_MODEL,
+          temperature: 0.2,
+          max_tokens: 1200,
+          messages: [
+            { role: "system", content: STRICT_JSON_SYSTEM },
+            { role: "user", content: userPrompt },
+          ],
+        });
+        return completion.choices[0]?.message?.content?.trim() ?? "";
+      } catch (err) {
+        logError("[ai] analyzeNeedWithContext (OpenAI rich)", err);
+        return "";
+      }
+    })(),
+  ]);
 
-  console.log("[ai] analyzeIntakeNeed: raw model response:", rawTextOut);
-
-  try {
-    const jsonStr = extractJsonObjectString(rawTextOut);
-    if (!jsonStr) throw new Error("no JSON object");
-    const parsed: unknown = JSON.parse(jsonStr);
-    const normalized = normalizeIntakeAnalysis(parsed, "openai");
-    if (normalized) {
-      console.log("[ai] analyzeIntakeNeed: parsed rich result");
-      return normalized;
+  if (richRaw) {
+    try {
+      const jsonStr = extractJsonObjectString(richRaw);
+      if (jsonStr) {
+        const parsed: unknown = JSON.parse(jsonStr);
+        const normalized = normalizeIntakeAnalysis(parsed, "openai", hfLabels);
+        if (normalized) {
+          logHfOpenAiDisagreement(hfLabels, normalized.need_type);
+          logAiOutcome("rich", input, normalized);
+          return normalized;
+        }
+      }
+    } catch (err) {
+      logError("[ai] analyzeNeedWithContext (parse rich)", err);
     }
-  } catch (err) {
-    logError("[ai] analyzeIntakeNeed (parse rich)", err);
   }
 
   try {
     const basic = await fetchBasicOpenAIClassification(trimmed);
-    return intakeAnalysisFromBasic(basic, "openai");
+    const merged = intakeAnalysisFromBasic(basic, "openai", hfLabels);
+    logHfOpenAiDisagreement(hfLabels, merged.need_type);
+    logAiOutcome("basic", input, merged);
+    return merged;
   } catch (err) {
-    logError("[ai] analyzeIntakeNeed (fallback basic)", err);
-    return intakeAnalysisFromBasic(
-      { need_type: "none", urgency: "low", confidence: 0.5 },
-      "openai"
-    );
+    logError("[ai] analyzeNeedWithContext (basic OpenAI)", err);
   }
+
+  if (hfLabels) {
+    const fromHf = intakeAnalysisFromHfHelper(hfLabels);
+    logAiOutcome("hf", input, fromHf);
+    return fromHf;
+  }
+
+  const fallback = fullFallbackAnalysis(null);
+  logAiOutcome("fallback", input, fallback);
+  return fallback;
+}
+
+export async function analyzeNeed(input: AnalyzeNeedInput): Promise<IntakeAiAnalysis> {
+  return analyzeNeedWithContext(input);
+}
+
+/**
+ * Back-compat: text-only analysis (no nearby context).
+ */
+export async function analyzeIntakeNeed(rawText: string): Promise<IntakeAiAnalysis> {
+  return analyzeNeedWithContext({ rawText });
 }
 
 /** Read text from a generateContent result without relying only on .text() (handles edge cases). */

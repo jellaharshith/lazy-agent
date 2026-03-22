@@ -28,6 +28,7 @@ function demoProfile(role: UserRole): Profile {
     full_name: "Demo user",
     role,
     created_at: new Date().toISOString(),
+    phone_number: null,
   };
 }
 
@@ -65,7 +66,7 @@ async function loadOrCreateProfile(user: User): Promise<ProfileResult> {
 
   const { data: existing, error: selectErr } = await supabase
     .from("profiles")
-    .select("id, full_name, role, created_at")
+    .select("id, full_name, role, created_at, phone_number")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -95,7 +96,7 @@ async function loadOrCreateProfile(user: User): Promise<ProfileResult> {
 
   const { data: again, error: againErr } = await supabase
     .from("profiles")
-    .select("id, full_name, role, created_at")
+    .select("id, full_name, role, created_at, phone_number")
     .eq("id", user.id)
     .maybeSingle();
 

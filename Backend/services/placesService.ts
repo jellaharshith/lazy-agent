@@ -2,11 +2,13 @@ import type { SearchIntent } from "./aiService";
 import type { Need, Resource } from "../types";
 import type { OsmFoodPlace, OsmFoodPlaceType } from "./publicDataService";
 import {
+  aiRankingHintBonus,
   calculateDistanceKm,
   computeCandidateRankScore,
   IntakePreferenceContext,
   pickFromRankedPool,
   preferenceRankBonus,
+  resourceMatchKind,
   resourceTypeTier,
   scoreResource,
 } from "./matchService";
@@ -201,6 +203,23 @@ export function osmPlacesToFoodPlaces(places: OsmFoodPlace[]): FoodPlace[] {
   }));
 }
 
+function foodPlaceDedupeKey(p: FoodPlace): string {
+  return `${p.name.trim().toLowerCase()}|${p.lat.toFixed(4)}|${p.lng.toFixed(4)}`;
+}
+
+/** Merge two place lists (e.g. default + intent-refined Google results), preferring the stronger type tier. */
+export function mergeFoodPlaces(a: FoodPlace[], b: FoodPlace[]): FoodPlace[] {
+  const map = new Map<string, FoodPlace>();
+  for (const p of [...a, ...b]) {
+    const k = foodPlaceDedupeKey(p);
+    const existing = map.get(k);
+    if (!existing || TYPE_PRIORITY[p.type] < TYPE_PRIORITY[existing.type]) {
+      map.set(k, p);
+    }
+  }
+  return [...map.values()];
+}
+
 export type BestFoodSource =
   | {
       source: "supabase";
@@ -215,6 +234,9 @@ const defaultPref: IntakePreferenceContext = {
   preferenceText: null,
   freeFoodPreferred: false,
   cheapFoodPreferred: false,
+  rankingHints: null,
+  nearbyRequired: false,
+  cuisinePreference: null,
 };
 
 /**
@@ -255,6 +277,16 @@ export function pickBestFoodSource(
       discountedPrice: r.discounted_price ?? null,
       originalPrice: r.original_price ?? null,
     });
+    rank += aiRankingHintBonus({
+      hints: pref.rankingHints,
+      nearbyRequired: pref.nearbyRequired ?? false,
+      distanceKm,
+      expiresAt: r.expires_at,
+      isPlace: false,
+      matchKind: resourceMatchKind(r),
+      discountedPrice: r.discounted_price ?? null,
+      originalPrice: r.original_price ?? null,
+    });
     scored.push({
       item: { kind: "supabase", resource: r, distanceKm },
       rank,
@@ -273,6 +305,16 @@ export function pickBestFoodSource(
     rank += preferenceRankBonus(pref, {
       title: p.name,
       subtitle: p.address,
+      discountedPrice: null,
+      originalPrice: null,
+    });
+    rank += aiRankingHintBonus({
+      hints: pref.rankingHints,
+      nearbyRequired: pref.nearbyRequired ?? false,
+      distanceKm,
+      expiresAt: null,
+      isPlace: true,
+      matchKind: p.type,
       discountedPrice: null,
       originalPrice: null,
     });

@@ -17,6 +17,8 @@ import intakeRouter from "./routes/intake";
 import myResourcesRouter from "./routes/myResources";
 import reservationsRouter from "./routes/reservations";
 import mySeekerRouter from "./routes/mySeeker";
+import dashboardRouter from "./routes/dashboard";
+import voiceRouter from "./routes/voice";
 
 const app = express();
 
@@ -49,6 +51,8 @@ app.get("/", (_req, res) => {
       myResources: "/api/my/resources",
       reservations: "/api/reservations",
       myReservations: "/api/my/reservations",
+      dashboardLive: "/api/dashboard/live",
+      voiceTestCall: "POST /api/voice/test-call",
     },
   });
 });
@@ -66,6 +70,8 @@ app.use("/api/intake", intakeRouter);
 app.use("/api/my/resources", myResourcesRouter);
 app.use("/api/reservations", reservationsRouter);
 app.use("/api/my", mySeekerRouter);
+app.use("/api/dashboard", dashboardRouter);
+app.use("/api/voice", voiceRouter);
 
 const server = app.listen(listenPort, () => {
   const addr = server.address();

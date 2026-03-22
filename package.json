@@ -1,7 +1,11 @@
 {
   "scripts": {
     "dev:backend": "ts-node --transpile-only Backend/index.ts",
-    "seed:public": "ts-node --transpile-only Backend/scripts/seedPublicData.ts"
+    "rum": "ts-node --transpile-only Backend/index.ts",
+    "seed:public": "ts-node --transpile-only Backend/scripts/seedPublicData.ts",
+    "twilio:ping": "ts-node --transpile-only Backend/scripts/twilioPing.ts",
+    "twilio:test-call": "ts-node --transpile-only Backend/scripts/twilioTestCall.ts",
+    "db:apply-profile-phone": "ts-node --transpile-only Backend/scripts/applyProfilePhoneSql.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -12,12 +16,14 @@
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "openai": "^6.32.0"
+    "openai": "^6.32.0",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }

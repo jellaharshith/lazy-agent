@@ -1,24 +1,32 @@
 import { Router, Request, Response } from "express";
 import { createMatch } from "../db/matches";
-import { analyzeIntakeNeed } from "../services/aiService";
+import {
+  analyzeNeedWithContext,
+  type ClassifiedNeed,
+  type IntakeAiAnalysis,
+  type IntakeStorageTags,
+  type NearbyCandidateForAi,
+} from "../services/aiService";
 import {
   createNeedFromInput,
   markNeedMatched,
   type ClassifiedNeedInput,
 } from "../services/needService";
 import {
+  getNearbyFoodPlaces,
   getNearbyFoodPlacesForIntent,
+  mergeFoodPlaces,
   osmPlacesToFoodPlaces,
   pickBestFoodSource,
+  type FoodPlace,
 } from "../services/placesService";
-import { resourceMatchKind } from "../services/matchService";
+import { calculateDistanceKm, resourceMatchKind } from "../services/matchService";
 import {
   getOpenStreetMapFoodPlaces,
   type OsmFoodPlace,
 } from "../services/publicDataService";
 import { listAvailableResources } from "../services/resourceService";
 import type { IntakePreferenceContext } from "../services/matchService";
-import type { ClassifiedNeed, IntakeStorageTags } from "../services/aiService";
 import type { Match, Need, Resource } from "../types";
 import { optionalAuth } from "../middleware/auth";
 
@@ -59,15 +67,67 @@ function safeFieldsFromStorageTags(tags: IntakeStorageTags): Partial<
   return out;
 }
 
-/** Only include AI metadata keys when values are present and safe (DB columns may be missing). */
-function classifiedNeedFromAnalysis(
-  analysis: {
-    need_type: string;
-    urgency: string;
-    confidence: number;
-    storage_tags: IntakeStorageTags;
+function buildNearbyCandidatesForAi(
+  lat: number,
+  lng: number,
+  resources: Resource[],
+  osmPlaces: OsmFoodPlace[],
+  googlePlaces: FoodPlace[]
+): NearbyCandidateForAi[] {
+  const out: NearbyCandidateForAi[] = [];
+
+  const resScored = resources
+    .filter((r) => r.lat != null && r.lng != null && r.status === "available")
+    .map((r) => ({ r, d: calculateDistanceKm(lat, lng, r.lat!, r.lng!) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 18);
+
+  for (const { r, d } of resScored) {
+    if (r.quantity != null && r.quantity <= 0) continue;
+    out.push({
+      title: r.title,
+      type: resourceMatchKind(r),
+      distanceKm: d,
+      discountedPrice: r.discounted_price ?? null,
+      originalPrice: r.original_price ?? null,
+      expiresAt: r.expires_at,
+      source: "supabase",
+    });
   }
-): ClassifiedNeedInput {
+
+  const osmScored = [...osmPlaces]
+    .map((p) => ({ p, d: calculateDistanceKm(lat, lng, p.lat, p.lng) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 8);
+
+  for (const { p, d } of osmScored) {
+    out.push({
+      title: p.name,
+      type: p.type,
+      distanceKm: d,
+      source: "osm",
+    });
+  }
+
+  const gScored = [...googlePlaces]
+    .map((p) => ({ p, d: calculateDistanceKm(lat, lng, p.lat, p.lng) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6);
+
+  for (const { p, d } of gScored) {
+    out.push({
+      title: p.name,
+      type: p.type,
+      distanceKm: d,
+      source: "google_places",
+    });
+  }
+
+  return out;
+}
+
+/** Only include AI metadata keys when values are present and safe (DB columns may be missing). */
+function classifiedNeedFromAnalysis(analysis: IntakeAiAnalysis): ClassifiedNeedInput {
   const tags = analysis.storage_tags;
   const out: ClassifiedNeedInput = {
     need_type: analysis.need_type,
@@ -250,8 +310,51 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "lat and lng must be finite numbers" });
     }
 
-    const analysis = await analyzeIntakeNeed(text);
-    console.log("[POST /api/intake] analysis result:", JSON.stringify(analysis));
+    let resources: Resource[] = [];
+    try {
+      resources = await listAvailableResources();
+      console.log("[POST /api/intake] resources fetched, count:", resources.length);
+    } catch (fetchErr) {
+      console.error(
+        "[POST /api/intake] resources fetch failed (continuing with places-only context):",
+        fetchErr
+      );
+    }
+
+    let osmPlaces: OsmFoodPlace[] = [];
+    try {
+      osmPlaces = await getOpenStreetMapFoodPlaces(latNum, lngNum);
+      console.log("[POST /api/intake] OSM places count:", osmPlaces.length);
+    } catch (osmErr) {
+      console.error(
+        "[POST /api/intake] OpenStreetMap (Nominatim) failed; using other sources only:",
+        osmErr
+      );
+    }
+
+    let googleInitial: FoodPlace[] = [];
+    try {
+      googleInitial = await getNearbyFoodPlaces(latNum, lngNum);
+      console.log("[POST /api/intake] Google Places (initial) count:", googleInitial.length);
+    } catch (gErr) {
+      console.error("[POST /api/intake] Google Places (initial) failed; continuing:", gErr);
+    }
+
+    const nearbyCandidates = buildNearbyCandidatesForAi(
+      latNum,
+      lngNum,
+      resources,
+      osmPlaces,
+      googleInitial
+    );
+    console.log("[POST /api/intake] candidates passed to AI:", nearbyCandidates.length);
+
+    const analysis = await analyzeNeedWithContext({
+      rawText: text,
+      lat: latNum,
+      lng: lngNum,
+      nearbyCandidates,
+    });
 
     const classification: ClassifiedNeed = {
       need_type: analysis.need_type,
@@ -331,63 +434,42 @@ router.post("/", async (req: Request, res: Response) => {
         analysis.storage_tags.preference_text ?? analysis.search_intent.user_preference,
       freeFoodPreferred: analysis.search_intent.free_food_preferred,
       cheapFoodPreferred: analysis.search_intent.cheap_food_preferred,
+      rankingHints: analysis.ranking_hints,
+      nearbyRequired: analysis.search_intent.nearby_required,
+      cuisinePreference: analysis.search_intent.cuisine_preference,
     };
 
     const message = analysis.ui_content.message;
     const summary = analysis.ui_content.summary;
 
-    let resources: Resource[] = [];
+    let googleRefined: FoodPlace[] = [];
     try {
-      resources = await listAvailableResources();
-      console.log("[POST /api/intake] resources fetched, count:", resources.length);
-    } catch (fetchErr) {
-      console.error("[POST /api/intake] resources fetch failed (need preserved):", fetchErr);
-      return sendIntakeSuccess(res, {
-        raw_text: text,
-        classification,
-        need,
-        bestMatch: null,
-        match: null,
-        message: NO_RESOURCE_MESSAGE,
-        summary: NO_RESOURCE_SUMMARY,
-      });
-    }
-
-    let googlePlaces: Awaited<ReturnType<typeof getNearbyFoodPlacesForIntent>> = [];
-    try {
-      googlePlaces = await getNearbyFoodPlacesForIntent(latNum, lngNum, analysis.search_intent);
-      console.log("[POST /api/intake] Google Places count:", googlePlaces.length);
+      googleRefined = await getNearbyFoodPlacesForIntent(latNum, lngNum, analysis.search_intent);
+      console.log("[POST /api/intake] Google Places (intent-refined) count:", googleRefined.length);
     } catch (gErr) {
-      console.error("[POST /api/intake] Google Places failed; continuing:", gErr);
-      googlePlaces = [];
+      console.error("[POST /api/intake] Google Places (intent-refined) failed; continuing:", gErr);
     }
 
-    let osmPlaces: OsmFoodPlace[] = [];
-    try {
-      osmPlaces = await getOpenStreetMapFoodPlaces(latNum, lngNum);
-      console.log("[POST /api/intake] OSM places count:", osmPlaces.length);
-    } catch (osmErr) {
-      console.error(
-        "[POST /api/intake] OpenStreetMap (Nominatim) failed; using other sources only:",
-        osmErr
-      );
-      osmPlaces = [];
-    }
-
+    const googleMerged = mergeFoodPlaces(googleInitial, googleRefined);
     const osmFood = osmPlacesToFoodPlaces(osmPlaces);
-    const mergedPlaces = [...googlePlaces, ...osmFood];
+    const mergedPlaces = [...googleMerged, ...osmFood];
 
-    const candidatePool = normalizeIntakeFoodCandidates(resources, osmPlaces, googlePlaces.length);
+    const candidatePool = normalizeIntakeFoodCandidates(resources, osmPlaces, googleMerged.length);
     console.log(
       "[POST /api/intake] merged candidate pool (supabase + osm + google meta):",
       candidatePool.length
     );
 
     const bestSource = pickBestFoodSource(need, resources, mergedPlaces, pref);
-    console.log(
-      "[POST /api/intake] best source selected:",
-      bestSource ? JSON.stringify(bestSource) : "null"
-    );
+    if (bestSource) {
+      const winner =
+        bestSource.source === "supabase"
+          ? { ranking_source: bestSource.source, title: bestSource.resource.title }
+          : { ranking_source: bestSource.source, title: bestSource.place.name };
+      console.log("[POST /api/intake] ranking winner:", JSON.stringify(winner));
+    } else {
+      console.log("[POST /api/intake] ranking winner: null");
+    }
 
     if (!bestSource) {
       return sendIntakeSuccess(res, {
